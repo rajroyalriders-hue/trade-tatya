@@ -9,7 +9,7 @@ from fyers_apiv3 import fyersModel
 # =========================
 import os
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # => None
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY") 
 CHANNEL_ID = 1498261283584217219
 
