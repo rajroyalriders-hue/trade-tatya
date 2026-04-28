@@ -1,0 +1,4 @@
+discord.py
+fyers-apiv3
+anthropic
+requests
