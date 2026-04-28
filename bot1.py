@@ -11,7 +11,7 @@ import os
 # CONFIG
 # =========================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CLAUDE_API_KEY = "CLAUDE_API_KEY"
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 CHANNEL_ID = 1498261283584217219
 
 FYERS_APP_ID = os.getenv("R19GD9BCZH-200")
