@@ -13,7 +13,7 @@ import os
 # =========================
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN")
 CLAUDE_API_KEY     = os.getenv("CLAUDE_API_KEY")
-FYERS_APP_ID       = os.getenv("FYERS_APP_ID")
+FYERS_APP_ID       = os.getenv("FYERS_APP_ID", "R19GD9BCZH-200")
 FYERS_ACCESS_TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 
 MAIN_CHANNEL_ID  = 1498261283584217219
@@ -270,13 +270,23 @@ def _get_india_vix():
 def _get_option_chain():
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
             "Referer": "https://www.nseindia.com/option-chain",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
         s = requests.Session()
-        s.get("https://www.nseindia.com", headers=headers, timeout=5)
-        r       = s.get("https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY", headers=headers, timeout=10)
+        s.get("https://www.nseindia.com", headers=headers, timeout=8)
+        s.get("https://www.nseindia.com/option-chain", headers=headers, timeout=8)
+        r = s.get("https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY", headers=headers, timeout=12)
+        if r.status_code != 200:
+            print(f"OC status: {r.status_code}")
+            return None
         records = r.json().get("records", {})
         spot    = records.get("underlyingValue", 0)
         expiry  = records.get("expiryDates", [None])[0]
