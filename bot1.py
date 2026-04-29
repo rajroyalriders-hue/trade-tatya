@@ -289,7 +289,7 @@ def get_option_chain_fyers(spot_price):
         if days_ahead <= 0:
             days_ahead += 7
         expiry = today.replace(day=today.day + days_ahead)
-        expiry_str = expiry.strftime("%d%b%y").upper()
+        expiry_str = expiry.strftime("%y%b").upper()
 
         symbols = []
         for s in strikes:
