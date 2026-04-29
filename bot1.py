@@ -291,10 +291,11 @@ def get_option_chain_fyers(spot_price):
         expiry = today.replace(day=today.day + days_ahead)
         expiry_str = expiry.strftime("%y%b").upper()
 
+        print("EXPIRY:", expiry_str)
         symbols = []
         for s in strikes:
-            symbols.append(f"NSE:NIFTY{expiry_str}{s}CE")
-            symbols.append(f"NSE:NIFTY{expiry_str}{s}PE")
+            symbols.append(f"NSE:NIFTY{s}CE{expiry_str}")
+            symbols.append(f"NSE:NIFTY{s}PE{expiry_str}")
 
         data = {"symbols": ",".join(symbols)}
         response = fyers.quotes(data=data)
