@@ -7,7 +7,7 @@ import aiohttp
 
 # ============== CONFIG ==============
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+CHANNEL_ID = "1498261283584217219"
 
 # Optional keys
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")  # optional
