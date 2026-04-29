@@ -2,39 +2,45 @@ import discord
 import time
 import requests
 import json
+import threading
+import asyncio
 from datetime import datetime
+from flask import Flask, request
 import anthropic
-from fyers_apiv3 import fyersModel
+from fyers_apiv3 import fyersModel, fyersAuthCode
 import os
 
 # =========================
 # CONFIG
 # =========================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
-CHANNEL_ID = 1498261283584217219
+DISCORD_TOKEN       = os.getenv("DISCORD_TOKEN")
+CLAUDE_API_KEY      = os.getenv("CLAUDE_API_KEY")
+CHANNEL_ID          = 1498261283584217219
 
-# --- TOKEN UPDATE CHANNEL ---
-TOKEN_UPDATE_CHANNEL_ID = 1498884238496239626   # Naya private channel
-ALLOWED_USER_ID = 1158032451659120732           # Sirf tumhara Discord ID
+# Token update channel (private)
+TOKEN_UPDATE_CHANNEL_ID = 1498884238496239626
+ALLOWED_USER_ID         = 1158032451659120732
 
-# --- RAILWAY CONFIG ---
-RAILWAY_API_TOKEN = os.getenv("RAILWAY_API_TOKEN")   # Railway mein variable daalo
-RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID") # Railway mein variable daalo
-RAILWAY_SERVICE_ID = os.getenv("RAILWAY_SERVICE_ID") # Railway mein variable daalo
+# Fyers
+FYERS_APP_ID        = os.getenv("FYERS_APP_ID")
+FYERS_SECRET_KEY    = os.getenv("FYERS_SECRET_KEY")
+FYERS_ACCESS_TOKEN  = os.getenv("FYERS_ACCESS_TOKEN")
+FYERS_REDIRECT_URI  = os.getenv("FYERS_REDIRECT_URI")  # Railway URL + /callback
+# Example: https://your-app.up.railway.app/callback
 
-FYERS_APP_ID = os.getenv("FYERS_APP_ID")
-FYERS_ACCESS_TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
+# Railway
+RAILWAY_API_TOKEN   = os.getenv("RAILWAY_API_TOKEN")
+RAILWAY_PROJECT_ID  = os.getenv("RAILWAY_PROJECT_ID")
+RAILWAY_SERVICE_ID  = os.getenv("RAILWAY_SERVICE_ID")
 
 COOLDOWN_SECONDS = 60
 last_run_time = 0
 
 # =========================
-# CLIENTS
+# DISCORD CLIENT
 # =========================
 intents = discord.Intents.default()
 intents.message_content = True
-
 client = discord.Client(intents=intents)
 anthropic_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
@@ -43,42 +49,112 @@ fyers = fyersModel.FyersModel(
     token=FYERS_ACCESS_TOKEN
 )
 
+# Discord channel reference (Flask callback ke liye)
+discord_loop = None
+token_channel = None
+
+# =========================
+# FLASK APP
+# =========================
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "Bot is running!", 200
+
+@flask_app.route("/callback")
+def fyers_callback():
+    """
+    Fyers login ke baad yahan redirect aata hai.
+    URL mein auth_code hota hai — usse access token banate hain.
+    """
+    auth_code = request.args.get("auth_code")
+    state     = request.args.get("state", "")
+
+    if not auth_code:
+        return "<h2>❌ Auth code nahi mila. Dobara try karo.</h2>", 400
+
+    try:
+        # Auth code se access token generate karo
+        session = fyersAuthCode.SessionModel(
+            client_id=FYERS_APP_ID,
+            secret_key=FYERS_SECRET_KEY,
+            redirect_uri=FYERS_REDIRECT_URI,
+            response_type="code",
+            grant_type="authorization_code"
+        )
+        session.set_token(auth_code)
+        response = session.generate_token()
+
+        if "access_token" not in response:
+            error_msg = response.get("message", "Unknown error")
+            # Discord pe error bhejo
+            asyncio.run_coroutine_threadsafe(
+                send_discord_message(f"❌ Token generate fail: {error_msg}"),
+                discord_loop
+            )
+            return f"<h2>❌ Token generate fail: {error_msg}</h2>", 400
+
+        new_token = response["access_token"]
+
+        # Railway update karo
+        success, msg = update_railway_token(new_token)
+
+        # Discord pe result bhejo
+        asyncio.run_coroutine_threadsafe(
+            send_discord_message(
+                f"{'✅' if success else '❌'} **Fyers Token Update**\n{msg}"
+            ),
+            discord_loop
+        )
+
+        if success:
+            return """
+            <html><body style='font-family:sans-serif;text-align:center;padding:50px'>
+            <h2>✅ Token generate aur update ho gaya!</h2>
+            <p>Discord channel check karo. Bot ready hai.</p>
+            <p>Yeh tab band kar sakte ho.</p>
+            </body></html>
+            """, 200
+        else:
+            return f"<h2>⚠️ Token mila par Railway update fail: {msg}</h2>", 500
+
+    except Exception as e:
+        asyncio.run_coroutine_threadsafe(
+            send_discord_message(f"❌ Callback error: {str(e)}"),
+            discord_loop
+        )
+        return f"<h2>❌ Error: {str(e)}</h2>", 500
+
+
+async def send_discord_message(msg: str):
+    """Flask thread se Discord mein message bhejne ke liye"""
+    global token_channel
+    if token_channel:
+        await token_channel.send(msg)
+
+
 # =========================
 # RAILWAY TOKEN UPDATE
 # =========================
 def update_railway_token(new_token: str) -> tuple[bool, str]:
-    """
-    Railway GraphQL API se FYERS_ACCESS_TOKEN variable update karta hai.
-    Returns: (success: bool, message: str)
-    """
     try:
-        api_token = RAILWAY_API_TOKEN or os.getenv("RAILWAY_API_TOKEN")
-        project_id = RAILWAY_PROJECT_ID or os.getenv("RAILWAY_PROJECT_ID")
-        service_id = RAILWAY_SERVICE_ID or os.getenv("RAILWAY_SERVICE_ID")
+        api_token  = RAILWAY_API_TOKEN
+        project_id = RAILWAY_PROJECT_ID
+        service_id = RAILWAY_SERVICE_ID
 
         if not all([api_token, project_id, service_id]):
-            return False, "❌ Railway config missing (RAILWAY_API_TOKEN / PROJECT_ID / SERVICE_ID)"
-
-        # Step 1: Environment ID lo
-        env_query = """
-        query {
-            project(id: "%s") {
-                environments {
-                    edges {
-                        node {
-                            id
-                            name
-                        }
-                    }
-                }
-            }
-        }
-        """ % project_id
+            return False, "Railway config missing (RAILWAY_API_TOKEN / PROJECT_ID / SERVICE_ID)"
 
         headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
+
+        # Step 1: Environment ID lo
+        env_query = """
+        query { project(id: "%s") { environments { edges { node { id name } } } } }
+        """ % project_id
 
         env_resp = requests.post(
             "https://backboard.railway.app/graphql/v2",
@@ -87,12 +163,8 @@ def update_railway_token(new_token: str) -> tuple[bool, str]:
             timeout=15
         )
         env_data = env_resp.json()
-
         environments = env_data["data"]["project"]["environments"]["edges"]
-        if not environments:
-            return False, "❌ Railway environment nahi mila"
 
-        # Production environment dhundo, nahi mila toh pehla lo
         env_id = None
         for e in environments:
             if e["node"]["name"].lower() == "production":
@@ -101,13 +173,12 @@ def update_railway_token(new_token: str) -> tuple[bool, str]:
         if not env_id:
             env_id = environments[0]["node"]["id"]
 
-        # Step 2: Variable upsert karo
+        # Step 2: Variable update karo
         upsert_mutation = """
         mutation variableUpsert($input: VariableUpsertInput!) {
             variableUpsert(input: $input)
         }
         """
-
         variables = {
             "input": {
                 "projectId": project_id,
@@ -117,7 +188,6 @@ def update_railway_token(new_token: str) -> tuple[bool, str]:
                 "value": new_token
             }
         }
-
         upsert_resp = requests.post(
             "https://backboard.railway.app/graphql/v2",
             json={"query": upsert_mutation, "variables": variables},
@@ -127,51 +197,54 @@ def update_railway_token(new_token: str) -> tuple[bool, str]:
         upsert_data = upsert_resp.json()
 
         if "errors" in upsert_data:
-            return False, f"❌ Railway error: {upsert_data['errors'][0]['message']}"
+            return False, f"Railway error: {upsert_data['errors'][0]['message']}"
 
-        # Step 3: Service redeploy karo taaki naya token active ho
+        # Step 3: Redeploy karo
         redeploy_mutation = """
         mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
             serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
         }
         """
-
-        redeploy_resp = requests.post(
+        requests.post(
             "https://backboard.railway.app/graphql/v2",
             json={
                 "query": redeploy_mutation,
-                "variables": {
-                    "serviceId": service_id,
-                    "environmentId": env_id
-                }
+                "variables": {"serviceId": service_id, "environmentId": env_id}
             },
             headers=headers,
             timeout=15
         )
-        redeploy_data = redeploy_resp.json()
 
-        if "errors" in redeploy_data:
-            # Token save hua par redeploy fail - partial success
-            return True, "✅ Token Railway mein save ho gaya!\n⚠️ Redeploy manually karo Railway dashboard se."
-
-        # Step 4: In-memory fyers object bhi update karo (current session ke liye)
+        # Step 4: Current session update karo
         global fyers, FYERS_ACCESS_TOKEN
         FYERS_ACCESS_TOKEN = new_token
-        fyers = fyersModel.FyersModel(
-            client_id=FYERS_APP_ID,
-            token=new_token
-        )
+        fyers = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=new_token)
 
-        return True, "✅ Token update & redeploy ho gaya! Bot 1-2 min mein restart hoga."
+        return True, "Token save + Railway redeploy ho gaya! Bot 1-2 min mein restart hoga. 🚀"
 
-    except requests.exceptions.Timeout:
-        return False, "❌ Railway API timeout. Dobara try karo."
     except Exception as e:
-        return False, f"❌ Error: {str(e)}"
+        return False, f"Error: {str(e)}"
 
 
 # =========================
-# FETCH NIFTY SPOT DATA (FYERS)
+# FYERS LOGIN LINK GENERATOR
+# =========================
+def get_fyers_login_url() -> str:
+    try:
+        session = fyersAuthCode.SessionModel(
+            client_id=FYERS_APP_ID,
+            secret_key=FYERS_SECRET_KEY,
+            redirect_uri=FYERS_REDIRECT_URI,
+            response_type="code",
+            state="discord_bot"
+        )
+        return session.generate_authcode()
+    except Exception as e:
+        return f"ERROR:{str(e)}"
+
+
+# =========================
+# MARKET DATA FUNCTIONS
 # =========================
 def get_market_data():
     try:
@@ -197,9 +270,7 @@ def get_market_data():
         print(f"Market data error: {e}")
         return None
 
-# =========================
-# FETCH OPTION CHAIN (NSE)
-# =========================
+
 def get_option_chain():
     try:
         headers = {
@@ -212,94 +283,68 @@ def get_option_chain():
         session.get("https://www.nseindia.com", headers=headers, timeout=5)
         response = session.get(
             "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
-            headers=headers,
-            timeout=10
+            headers=headers, timeout=10
         )
         data = response.json()
 
         records = data.get("records", {})
-        filtered = data.get("filtered", {})
         spot_price = records.get("underlyingValue", 0)
         expiry_dates = records.get("expiryDates", [])
         nearest_expiry = expiry_dates[0] if expiry_dates else None
 
         oi_data = []
-        total_call_oi = 0
-        total_put_oi = 0
-        max_call_oi = 0
-        max_put_oi = 0
-        max_call_strike = 0
-        max_put_strike = 0
+        total_call_oi = total_put_oi = 0
+        max_call_oi = max_put_oi = 0
+        max_call_strike = max_put_strike = 0
 
         for item in records.get("data", []):
             if item.get("expiryDate") != nearest_expiry:
                 continue
-
             strike = item.get("strikePrice", 0)
             ce = item.get("CE", {})
             pe = item.get("PE", {})
 
-            ce_oi = ce.get("openInterest", 0) or 0
-            pe_oi = pe.get("openInterest", 0) or 0
+            ce_oi  = ce.get("openInterest", 0) or 0
+            pe_oi  = pe.get("openInterest", 0) or 0
             ce_coi = ce.get("changeinOpenInterest", 0) or 0
             pe_coi = pe.get("changeinOpenInterest", 0) or 0
-            ce_iv = ce.get("impliedVolatility", 0) or 0
-            pe_iv = pe.get("impliedVolatility", 0) or 0
+            ce_iv  = ce.get("impliedVolatility", 0) or 0
+            pe_iv  = pe.get("impliedVolatility", 0) or 0
             ce_ltp = ce.get("lastPrice", 0) or 0
             pe_ltp = pe.get("lastPrice", 0) or 0
 
             total_call_oi += ce_oi
-            total_put_oi += pe_oi
+            total_put_oi  += pe_oi
 
             if ce_oi > max_call_oi:
-                max_call_oi = ce_oi
-                max_call_strike = strike
-
+                max_call_oi = ce_oi; max_call_strike = strike
             if pe_oi > max_put_oi:
-                max_put_oi = pe_oi
-                max_put_strike = strike
+                max_put_oi = pe_oi; max_put_strike = strike
 
             oi_data.append({
-                "strike": strike,
-                "ce_oi": ce_oi,
-                "pe_oi": pe_oi,
-                "ce_coi": ce_coi,
-                "pe_coi": pe_coi,
-                "ce_iv": ce_iv,
-                "pe_iv": pe_iv,
-                "ce_ltp": ce_ltp,
-                "pe_ltp": pe_ltp,
+                "strike": strike, "ce_oi": ce_oi, "pe_oi": pe_oi,
+                "ce_coi": ce_coi, "pe_coi": pe_coi,
+                "ce_iv": ce_iv, "pe_iv": pe_iv,
+                "ce_ltp": ce_ltp, "pe_ltp": pe_ltp,
             })
 
         pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 0
-
         atm_strike = round(spot_price / 50) * 50
-        atm_data = next((x for x in oi_data if x["strike"] == atm_strike), None)
-
+        atm_data   = next((x for x in oi_data if x["strike"] == atm_strike), None)
         near_strikes = sorted(oi_data, key=lambda x: abs(x["strike"] - spot_price))[:10]
 
         return {
-            "spot": spot_price,
-            "expiry": nearest_expiry,
-            "pcr": pcr,
-            "total_call_oi": total_call_oi,
-            "total_put_oi": total_put_oi,
-            "max_call_strike": max_call_strike,
-            "max_call_oi": max_call_oi,
-            "max_put_strike": max_put_strike,
-            "max_put_oi": max_put_oi,
-            "atm_strike": atm_strike,
-            "atm_data": atm_data,
-            "near_strikes": near_strikes,
+            "spot": spot_price, "expiry": nearest_expiry, "pcr": pcr,
+            "total_call_oi": total_call_oi, "total_put_oi": total_put_oi,
+            "max_call_strike": max_call_strike, "max_call_oi": max_call_oi,
+            "max_put_strike": max_put_strike, "max_put_oi": max_put_oi,
+            "atm_strike": atm_strike, "atm_data": atm_data, "near_strikes": near_strikes,
         }
-
     except Exception as e:
         print(f"Option chain error: {e}")
         return None
 
-# =========================
-# FETCH GREEKS (FYERS)
-# =========================
+
 def get_greeks(spot_price):
     try:
         atm = round(spot_price / 50) * 50
@@ -310,10 +355,7 @@ def get_greeks(spot_price):
         days_ahead = 3 - today.weekday()
         if days_ahead <= 0:
             days_ahead += 7
-        expiry = today.replace(
-            day=today.day + days_ahead,
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        expiry = today.replace(day=today.day + days_ahead, hour=0, minute=0, second=0, microsecond=0)
         expiry_str = expiry.strftime("%d%b%y").upper()
 
         symbols = [
@@ -330,114 +372,78 @@ def get_greeks(spot_price):
         if "d" in response and response["d"]:
             for item in response["d"]:
                 sym = item.get("n", "")
-                v = item.get("v", {})
+                v   = item.get("v", {})
                 greeks_data[sym] = {
-                    "ltp": v.get("lp", 0),
-                    "delta": v.get("delta", 0),
-                    "gamma": v.get("gamma", 0),
-                    "theta": v.get("theta", 0),
-                    "vega": v.get("vega", 0),
-                    "iv": v.get("iv", 0),
-                    "oi": v.get("oi", 0),
+                    "ltp": v.get("lp", 0), "delta": v.get("delta", 0),
+                    "gamma": v.get("gamma", 0), "theta": v.get("theta", 0),
+                    "vega": v.get("vega", 0), "iv": v.get("iv", 0), "oi": v.get("oi", 0),
                 }
 
         return greeks_data, atm, expiry_str
-
     except Exception as e:
         print(f"Greeks error: {e}")
         return {}, 0, ""
 
-# =========================
-# SUPPLY & DEMAND ZONES
-# =========================
+
 def get_supply_demand_zones(oc_data, spot):
     if not oc_data:
         return None
-
     supply_zone = oc_data["max_call_strike"]
     demand_zone = oc_data["max_put_strike"]
 
     high_ce_oi = sorted(oc_data["near_strikes"], key=lambda x: x["ce_oi"], reverse=True)[:3]
     high_pe_oi = sorted(oc_data["near_strikes"], key=lambda x: x["pe_oi"], reverse=True)[:3]
 
-    resistance_levels = [x["strike"] for x in high_ce_oi]
-    support_levels = [x["strike"] for x in high_pe_oi]
-
     above = [x["strike"] for x in oc_data["near_strikes"] if x["strike"] > spot]
     below = [x["strike"] for x in oc_data["near_strikes"] if x["strike"] < spot]
 
-    immediate_resistance = min(above) if above else supply_zone
-    immediate_support = max(below) if below else demand_zone
-
     return {
-        "major_supply": supply_zone,
-        "major_demand": demand_zone,
-        "resistance_levels": resistance_levels,
-        "support_levels": support_levels,
-        "immediate_resistance": immediate_resistance,
-        "immediate_support": immediate_support,
+        "major_supply": supply_zone, "major_demand": demand_zone,
+        "resistance_levels": [x["strike"] for x in high_ce_oi],
+        "support_levels": [x["strike"] for x in high_pe_oi],
+        "immediate_resistance": min(above) if above else supply_zone,
+        "immediate_support": max(below) if below else demand_zone,
     }
 
-# =========================
-# TECHNICAL LEVELS
-# =========================
+
 def calculate_levels(m):
     high, low = m["high"], m["low"]
     close = m.get("prev_close") or m["open"]
     pivot = (high + low + close) / 3
-    r1 = (2 * pivot) - low
-    r2 = pivot + (high - low)
-    s1 = (2 * pivot) - high
-    s2 = pivot - (high - low)
     return {
         "pivot": round(pivot, 2),
-        "r1": round(r1, 2),
-        "r2": round(r2, 2),
-        "s1": round(s1, 2),
-        "s2": round(s2, 2),
+        "r1": round((2 * pivot) - low, 2),
+        "r2": round(pivot + (high - low), 2),
+        "s1": round((2 * pivot) - high, 2),
+        "s2": round(pivot - (high - low), 2),
     }
+
 
 def calc_vwap(m):
     return round((m["high"] + m["low"] + m["price"]) / 3, 2)
 
-# =========================
-# MASTER TRADE ENGINE
-# =========================
+
 def master_trade_engine(market, oc_data, greeks_data, atm, expiry_str):
-    price = market["price"]
+    price  = market["price"]
     levels = calculate_levels(market)
-    vwap = calc_vwap(market)
-    zones = get_supply_demand_zones(oc_data, price) if oc_data else None
+    vwap   = calc_vwap(market)
+    zones  = get_supply_demand_zones(oc_data, price) if oc_data else None
 
-    atm_ce_key = f"NSE:NIFTY{expiry_str}{atm}CE"
-    atm_pe_key = f"NSE:NIFTY{expiry_str}{atm}PE"
-    atm_ce = greeks_data.get(atm_ce_key, {})
-    atm_pe = greeks_data.get(atm_pe_key, {})
+    atm_ce = greeks_data.get(f"NSE:NIFTY{expiry_str}{atm}CE", {})
+    atm_pe = greeks_data.get(f"NSE:NIFTY{expiry_str}{atm}PE", {})
 
-    signals = []
-
-    bullish = price > vwap
-    bearish = price < vwap
-    trend = "BULLISH" if bullish else "BEARISH"
+    trend = "BULLISH" if price > vwap else "BEARISH"
 
     oi_signal = "NEUTRAL"
     if oc_data:
         pcr = oc_data["pcr"]
-        if pcr > 1.3:
-            oi_signal = "BULLISH"
-        elif pcr < 0.7:
-            oi_signal = "BEARISH"
-        else:
-            oi_signal = "NEUTRAL"
+        oi_signal = "BULLISH" if pcr > 1.3 else ("BEARISH" if pcr < 0.7 else "NEUTRAL")
 
     greek_signal = "NEUTRAL"
     if atm_ce and atm_pe:
         ce_delta = abs(atm_ce.get("delta", 0))
         pe_delta = abs(atm_pe.get("delta", 0))
-        if ce_delta > pe_delta:
-            greek_signal = "BULLISH"
-        elif pe_delta > ce_delta:
-            greek_signal = "BEARISH"
+        greek_signal = "BULLISH" if ce_delta > pe_delta else ("BEARISH" if pe_delta > ce_delta else "NEUTRAL")
 
     zone_signal = "NEUTRAL"
     if zones:
@@ -446,75 +452,50 @@ def master_trade_engine(market, oc_data, greeks_data, atm, expiry_str):
         elif price >= zones["immediate_resistance"] - 30:
             zone_signal = "BEARISH"
 
-    bull_count = sum([
-        trend == "BULLISH",
-        oi_signal == "BULLISH",
-        greek_signal == "BULLISH",
-        zone_signal == "BULLISH"
-    ])
-    bear_count = sum([
-        trend == "BEARISH",
-        oi_signal == "BEARISH",
-        greek_signal == "BEARISH",
-        zone_signal == "BEARISH"
-    ])
+    bull_count = sum([trend == "BULLISH", oi_signal == "BULLISH", greek_signal == "BULLISH", zone_signal == "BULLISH"])
+    bear_count = sum([trend == "BEARISH", oi_signal == "BEARISH", greek_signal == "BEARISH", zone_signal == "BEARISH"])
 
     if bull_count >= 3:
         final_signal = "CALL BUY"
-        strike = atm
-        option_sym = f"NIFTY {strike} CE"
-        entry = atm_ce.get("ltp", price) if atm_ce else price
-        sl = zones["immediate_support"] - 20 if zones else levels["s1"]
-        t1 = zones["immediate_resistance"] if zones else levels["r1"]
-        t2 = levels["r1"] if zones else levels["r2"]
-        confidence = int((bull_count / 4) * 100)
-
+        option_sym   = f"NIFTY {atm} CE"
+        entry        = atm_ce.get("ltp", price) if atm_ce else price
+        sl           = zones["immediate_support"] - 20 if zones else levels["s1"]
+        t1           = zones["immediate_resistance"] if zones else levels["r1"]
+        t2           = levels["r1"] if zones else levels["r2"]
+        confidence   = int((bull_count / 4) * 100)
     elif bear_count >= 3:
         final_signal = "PUT BUY"
-        strike = atm
-        option_sym = f"NIFTY {strike} PE"
-        entry = atm_pe.get("ltp", price) if atm_pe else price
-        sl = zones["immediate_resistance"] + 20 if zones else levels["r1"]
-        t1 = zones["immediate_support"] if zones else levels["s1"]
-        t2 = levels["s1"] if zones else levels["s2"]
-        confidence = int((bear_count / 4) * 100)
-
+        option_sym   = f"NIFTY {atm} PE"
+        entry        = atm_pe.get("ltp", price) if atm_pe else price
+        sl           = zones["immediate_resistance"] + 20 if zones else levels["r1"]
+        t1           = zones["immediate_support"] if zones else levels["s1"]
+        t2           = levels["s1"] if zones else levels["s2"]
+        confidence   = int((bear_count / 4) * 100)
     else:
         final_signal = "NO TRADE"
-        option_sym = None
+        option_sym   = None
         entry = sl = t1 = t2 = None
-        confidence = 0
+        confidence   = 0
 
     return {
-        "signal": final_signal,
-        "option": option_sym,
+        "signal": final_signal, "option": option_sym,
         "entry": round(entry, 2) if entry else None,
         "sl": round(sl, 2) if sl else None,
         "t1": round(t1, 2) if t1 else None,
         "t2": round(t2, 2) if t2 else None,
-        "confidence": confidence,
-        "trend": trend,
-        "oi_signal": oi_signal,
-        "greek_signal": greek_signal,
-        "zone_signal": zone_signal,
-        "bull_count": bull_count,
-        "bear_count": bear_count,
-        "levels": levels,
-        "vwap": vwap,
-        "atm_ce": atm_ce,
-        "atm_pe": atm_pe,
-        "zones": zones,
-        "oc_data": oc_data,
+        "confidence": confidence, "trend": trend,
+        "oi_signal": oi_signal, "greek_signal": greek_signal, "zone_signal": zone_signal,
+        "bull_count": bull_count, "bear_count": bear_count,
+        "levels": levels, "vwap": vwap, "atm_ce": atm_ce, "atm_pe": atm_pe,
+        "zones": zones, "oc_data": oc_data,
     }
 
-# =========================
-# FORMAT OUTPUT
-# =========================
+
 def format_output(res, market):
-    oc = res["oc_data"]
+    oc     = res["oc_data"]
     atm_ce = res["atm_ce"]
     atm_pe = res["atm_pe"]
-    zones = res["zones"]
+    zones  = res["zones"]
     levels = res["levels"]
 
     signal_emoji = "🟢" if res["signal"] == "CALL BUY" else ("🔴" if res["signal"] == "PUT BUY" else "⚪")
@@ -532,7 +513,6 @@ Open: `{market['open']}` | High: `{market['high']}` | Low: `{market['low']}`
 Pivot: `{levels['pivot']}` | R1: `{levels['r1']}` | R2: `{levels['r2']}`
 S1: `{levels['s1']}` | S2: `{levels['s2']}`
 """
-
     if zones:
         msg += f"""
 🏗️ **SUPPLY & DEMAND ZONES**
@@ -541,7 +521,6 @@ Major Demand (Support): `{zones['major_demand']}`
 Immediate Resistance: `{zones['immediate_resistance']}`
 Immediate Support: `{zones['immediate_support']}`
 """
-
     if oc:
         msg += f"""
 📈 **OI ANALYSIS** (Expiry: {oc['expiry']})
@@ -550,14 +529,12 @@ Max Call OI: `{oc['max_call_strike']}` ({oc['max_call_oi']:,}) ← **Resistance*
 Max Put OI: `{oc['max_put_strike']}` ({oc['max_put_oi']:,}) ← **Support**
 Total Call OI: `{oc['total_call_oi']:,}` | Total Put OI: `{oc['total_put_oi']:,}`
 """
-
     if atm_ce or atm_pe:
         msg += f"""
 🔢 **ATM GREEKS**
 CE → Delta: `{atm_ce.get('delta','N/A')}` | IV: `{atm_ce.get('iv','N/A')}%` | Theta: `{atm_ce.get('theta','N/A')}` | LTP: `{atm_ce.get('ltp','N/A')}`
 PE → Delta: `{atm_pe.get('delta','N/A')}` | IV: `{atm_pe.get('iv','N/A')}%` | Theta: `{atm_pe.get('theta','N/A')}` | LTP: `{atm_pe.get('ltp','N/A')}`
 """
-
     msg += f"""
 🎯 **SIGNAL CONFLUENCE**
 Trend: `{res['trend']}` | OI: `{res['oi_signal']}` | Greeks: `{res['greek_signal']}` | Zone: `{res['zone_signal']}`
@@ -565,20 +542,16 @@ Bullish Signals: `{res['bull_count']}/4` | Bearish Signals: `{res['bear_count']}
 
 {signal_emoji} **FINAL SIGNAL: {res['signal']}**
 """
-
     if res["signal"] != "NO TRADE":
         msg += f"""Option: `{res['option']}`
 Entry: `{res['entry']}` | SL: `{res['sl']}`
 Target 1: `{res['t1']}` | Target 2: `{res['t2']}`
 Confidence: `{res['confidence']}%`
 """
-
     msg += "\n⚠️ *Manual execution only. Not SEBI registered.*"
     return msg
 
-# =========================
-# CLAUDE AI ANALYSIS
-# =========================
+
 def get_ai_trade(market, oc_data, greeks_data, zones, levels):
     oc_summary = ""
     if oc_data:
@@ -587,10 +560,8 @@ Option Chain:
 - PCR: {oc_data['pcr']}
 - Max Call OI Strike (Resistance): {oc_data['max_call_strike']} with {oc_data['max_call_oi']:,} OI
 - Max Put OI Strike (Support): {oc_data['max_put_strike']} with {oc_data['max_put_oi']:,} OI
-- Total Call OI: {oc_data['total_call_oi']:,}
-- Total Put OI: {oc_data['total_put_oi']:,}
+- Total Call OI: {oc_data['total_call_oi']:,} | Total Put OI: {oc_data['total_put_oi']:,}
 """
-
     greeks_summary = ""
     if greeks_data:
         for k, v in list(greeks_data.items())[:2]:
@@ -600,10 +571,8 @@ Option Chain:
     if zones:
         zones_summary = f"""
 Supply/Demand:
-- Major Supply: {zones['major_supply']}
-- Major Demand: {zones['major_demand']}
-- Immediate Resistance: {zones['immediate_resistance']}
-- Immediate Support: {zones['immediate_support']}
+- Major Supply: {zones['major_supply']} | Major Demand: {zones['major_demand']}
+- Immediate Resistance: {zones['immediate_resistance']} | Immediate Support: {zones['immediate_support']}
 """
 
     prompt = f"""You are an expert NIFTY intraday options trader. Analyze this data and give a precise trade recommendation.
@@ -618,14 +587,11 @@ Pivot Levels:
 - Pivot: {levels['pivot']}, R1: {levels['r1']}, R2: {levels['r2']}
 - S1: {levels['s1']}, S2: {levels['s2']}
 
-{oc_summary}
-{greeks_summary}
-{zones_summary}
+{oc_summary}{greeks_summary}{zones_summary}
 
 Rules:
 - Only high probability setups (min 70% confidence)
 - If unclear → NO TRADE
-- Consider OI, Greeks, Supply/Demand together
 - PCR > 1.3 = Bullish, PCR < 0.7 = Bearish
 
 Give structured output:
@@ -636,10 +602,9 @@ STOP LOSS: [price]
 TARGET 1: [price]
 TARGET 2: [price]
 CONFIDENCE: [X%]
-REASON: [2-3 lines explaining WHY based on OI + Greeks + Zones]
-RISK: [key risk to watch]
+REASON: [2-3 lines]
+RISK: [key risk]
 """
-
     try:
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-5",
@@ -650,12 +615,17 @@ RISK: [key risk to watch]
     except Exception as e:
         return f"❌ AI Error: {str(e)}"
 
+
 # =========================
 # DISCORD EVENTS
 # =========================
 @client.event
 async def on_ready():
+    global discord_loop, token_channel
+    discord_loop = asyncio.get_event_loop()
+    token_channel = client.get_channel(TOKEN_UPDATE_CHANNEL_ID)
     print(f"✅ Bot logged in as {client.user}")
+
 
 @client.event
 async def on_message(message):
@@ -663,45 +633,45 @@ async def on_message(message):
         return
 
     # ===========================================
-    # TOKEN UPDATE — Private channel se
+    # TOKEN CHANNEL — "generate" likhne pe login link aata hai
     # ===========================================
     if message.channel.id == TOKEN_UPDATE_CHANNEL_ID:
-        # Sirf allowed user ka message suno
+
         if message.author.id != ALLOWED_USER_ID:
             await message.delete()
             return
 
-        new_token = message.content.strip()
+        text = message.content.strip().lower()
 
-        # Token valid hai ya nahi basic check
-        if len(new_token) < 20:
-            await message.channel.send("⚠️ Token bahut chhota lag raha hai. Sahi token paste karo.")
-            return
-
-        await message.channel.send("⏳ Railway mein token update ho raha hai...")
-
-        success, result_msg = update_railway_token(new_token)
-        await message.channel.send(result_msg)
-
-        # Security: Token message delete karo channel se
-        try:
+        if text == "generate":
             await message.delete()
-        except:
-            pass
+            login_url = get_fyers_login_url()
 
-        return  # Baaki commands check mat karo
+            if login_url.startswith("ERROR:"):
+                await message.channel.send(f"❌ Login URL generate nahi hua: {login_url}")
+                return
+
+            await message.channel.send(
+                f"🔐 **Fyers Login Link** (sirf tumhare liye)\n\n"
+                f"👉 {login_url}\n\n"
+                f"_Yeh link kholo → Login karo → Token automatically update ho jayega!_"
+            )
+        else:
+            # Kuch aur likha — delete karo
+            await message.delete()
+            await message.channel.send("ℹ️ Sirf `generate` likho token ke liye.", delete_after=5)
+
+        return
 
     # ===========================================
-    # NORMAL BOT COMMANDS (purana channel)
+    # NORMAL BOT COMMANDS
     # ===========================================
-
-    # FULL ANALYSIS
     if message.content.lower() == "trade!":
         await message.channel.send("⏳ Fetching market data, OI & Greeks...")
 
         market = get_market_data()
         if not market or market["price"] is None:
-            await message.channel.send("❌ Market data fetch failed")
+            await message.channel.send("❌ Market data fetch failed. Pehle token update karo — token channel mein `generate` likho.")
             return
 
         price = market["price"]
@@ -712,20 +682,18 @@ async def on_message(message):
         await message.channel.send("🔢 Fetching Greeks...")
         greeks_data, atm, expiry_str = get_greeks(price)
 
-        result = master_trade_engine(market, oc_data, greeks_data, atm, expiry_str)
+        result    = master_trade_engine(market, oc_data, greeks_data, atm, expiry_str)
         formatted = format_output(result, market)
-
         await message.channel.send(formatted)
 
         await message.channel.send("🤖 Running AI analysis...")
-        levels = calculate_levels(market)
-        zones = get_supply_demand_zones(oc_data, price) if oc_data else None
+        levels    = calculate_levels(market)
+        zones     = get_supply_demand_zones(oc_data, price) if oc_data else None
         ai_result = get_ai_trade(market, oc_data, greeks_data, zones, levels)
 
-        time_now = datetime.now().strftime("%H:%M:%S")
         ai_msg = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🤖 **AI DEEP ANALYSIS** | {time_now}
+🤖 **AI DEEP ANALYSIS** | {datetime.now().strftime("%H:%M:%S")}
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
 {ai_result}
@@ -734,7 +702,6 @@ async def on_message(message):
 """
         await message.channel.send(ai_msg)
 
-    # QUICK OI CHECK
     elif message.content.lower() == "oi!":
         await message.channel.send("📡 Fetching OI data...")
         oc_data = get_option_chain()
@@ -742,7 +709,7 @@ async def on_message(message):
             await message.channel.send("❌ OI fetch failed")
             return
 
-        near = oc_data["near_strikes"][:6]
+        near  = oc_data["near_strikes"][:6]
         table = "Strike | CE OI | PE OI | CE IV | PE IV\n"
         table += "-------|-------|-------|-------|------\n"
         for s in near:
@@ -762,7 +729,6 @@ PCR: `{oc_data['pcr']}` | ATM: `{oc_data['atm_strike']}`
 """
         await message.channel.send(oi_msg)
 
-    # HELP
     elif message.content.lower() == "help!":
         help_msg = """
 📋 **BOT COMMANDS**
@@ -770,10 +736,29 @@ PCR: `{oc_data['pcr']}` | ATM: `{oc_data['atm_strike']}`
 `trade!` — Full analysis: OI + Greeks + Supply/Demand + AI Signal
 `oi!` — Quick OI snapshot with PCR & key levels
 `help!` — Show this message
+
+🔐 **Token Update** (private channel mein)
+`generate` — Fyers login link milega → login karo → token auto update!
 """
         await message.channel.send(help_msg)
 
+
 # =========================
-# RUN
+# FLASK THREAD
 # =========================
-client.run(DISCORD_TOKEN)
+def run_flask():
+    port = int(os.getenv("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+
+# =========================
+# MAIN — Flask + Discord dono saath chalao
+# =========================
+if __name__ == "__main__":
+    # Flask alag thread mein
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("✅ Flask server started")
+
+    # Discord bot main thread mein
+    client.run(DISCORD_TOKEN)
