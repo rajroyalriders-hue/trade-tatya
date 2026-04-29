@@ -14,6 +14,15 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 CHANNEL_ID = 1498261283584217219
 
+# --- TOKEN UPDATE CHANNEL ---
+TOKEN_UPDATE_CHANNEL_ID = 1498884238496239626   # Naya private channel
+ALLOWED_USER_ID = 1158032451659120732           # Sirf tumhara Discord ID
+
+# --- RAILWAY CONFIG ---
+RAILWAY_API_TOKEN = os.getenv("RAILWAY_API_TOKEN")   # Railway mein variable daalo
+RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID") # Railway mein variable daalo
+RAILWAY_SERVICE_ID = os.getenv("RAILWAY_SERVICE_ID") # Railway mein variable daalo
+
 FYERS_APP_ID = os.getenv("FYERS_APP_ID")
 FYERS_ACCESS_TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 
@@ -33,6 +42,133 @@ fyers = fyersModel.FyersModel(
     client_id=FYERS_APP_ID,
     token=FYERS_ACCESS_TOKEN
 )
+
+# =========================
+# RAILWAY TOKEN UPDATE
+# =========================
+def update_railway_token(new_token: str) -> tuple[bool, str]:
+    """
+    Railway GraphQL API se FYERS_ACCESS_TOKEN variable update karta hai.
+    Returns: (success: bool, message: str)
+    """
+    try:
+        api_token = RAILWAY_API_TOKEN or os.getenv("RAILWAY_API_TOKEN")
+        project_id = RAILWAY_PROJECT_ID or os.getenv("RAILWAY_PROJECT_ID")
+        service_id = RAILWAY_SERVICE_ID or os.getenv("RAILWAY_SERVICE_ID")
+
+        if not all([api_token, project_id, service_id]):
+            return False, "❌ Railway config missing (RAILWAY_API_TOKEN / PROJECT_ID / SERVICE_ID)"
+
+        # Step 1: Environment ID lo
+        env_query = """
+        query {
+            project(id: "%s") {
+                environments {
+                    edges {
+                        node {
+                            id
+                            name
+                        }
+                    }
+                }
+            }
+        }
+        """ % project_id
+
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+
+        env_resp = requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            json={"query": env_query},
+            headers=headers,
+            timeout=15
+        )
+        env_data = env_resp.json()
+
+        environments = env_data["data"]["project"]["environments"]["edges"]
+        if not environments:
+            return False, "❌ Railway environment nahi mila"
+
+        # Production environment dhundo, nahi mila toh pehla lo
+        env_id = None
+        for e in environments:
+            if e["node"]["name"].lower() == "production":
+                env_id = e["node"]["id"]
+                break
+        if not env_id:
+            env_id = environments[0]["node"]["id"]
+
+        # Step 2: Variable upsert karo
+        upsert_mutation = """
+        mutation variableUpsert($input: VariableUpsertInput!) {
+            variableUpsert(input: $input)
+        }
+        """
+
+        variables = {
+            "input": {
+                "projectId": project_id,
+                "environmentId": env_id,
+                "serviceId": service_id,
+                "name": "FYERS_ACCESS_TOKEN",
+                "value": new_token
+            }
+        }
+
+        upsert_resp = requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            json={"query": upsert_mutation, "variables": variables},
+            headers=headers,
+            timeout=15
+        )
+        upsert_data = upsert_resp.json()
+
+        if "errors" in upsert_data:
+            return False, f"❌ Railway error: {upsert_data['errors'][0]['message']}"
+
+        # Step 3: Service redeploy karo taaki naya token active ho
+        redeploy_mutation = """
+        mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
+            serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+        }
+        """
+
+        redeploy_resp = requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            json={
+                "query": redeploy_mutation,
+                "variables": {
+                    "serviceId": service_id,
+                    "environmentId": env_id
+                }
+            },
+            headers=headers,
+            timeout=15
+        )
+        redeploy_data = redeploy_resp.json()
+
+        if "errors" in redeploy_data:
+            # Token save hua par redeploy fail - partial success
+            return True, "✅ Token Railway mein save ho gaya!\n⚠️ Redeploy manually karo Railway dashboard se."
+
+        # Step 4: In-memory fyers object bhi update karo (current session ke liye)
+        global fyers, FYERS_ACCESS_TOKEN
+        FYERS_ACCESS_TOKEN = new_token
+        fyers = fyersModel.FyersModel(
+            client_id=FYERS_APP_ID,
+            token=new_token
+        )
+
+        return True, "✅ Token update & redeploy ho gaya! Bot 1-2 min mein restart hoga."
+
+    except requests.exceptions.Timeout:
+        return False, "❌ Railway API timeout. Dobara try karo."
+    except Exception as e:
+        return False, f"❌ Error: {str(e)}"
+
 
 # =========================
 # FETCH NIFTY SPOT DATA (FYERS)
@@ -137,11 +273,9 @@ def get_option_chain():
 
         pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 0
 
-        # ATM strike
         atm_strike = round(spot_price / 50) * 50
         atm_data = next((x for x in oi_data if x["strike"] == atm_strike), None)
 
-        # Top 5 strikes near ATM
         near_strikes = sorted(oi_data, key=lambda x: abs(x["strike"] - spot_price))[:10]
 
         return {
@@ -172,9 +306,7 @@ def get_greeks(spot_price):
         otm_call = atm + 50
         itm_call = atm - 50
 
-        # Get expiry
         today = datetime.now()
-        # Try current week Thursday
         days_ahead = 3 - today.weekday()
         if days_ahead <= 0:
             days_ahead += 7
@@ -222,19 +354,15 @@ def get_supply_demand_zones(oc_data, spot):
     if not oc_data:
         return None
 
-    # Major resistance = max call OI strike (supply)
-    # Major support = max put OI strike (demand)
     supply_zone = oc_data["max_call_strike"]
     demand_zone = oc_data["max_put_strike"]
 
-    # Secondary zones from near strikes
     high_ce_oi = sorted(oc_data["near_strikes"], key=lambda x: x["ce_oi"], reverse=True)[:3]
     high_pe_oi = sorted(oc_data["near_strikes"], key=lambda x: x["pe_oi"], reverse=True)[:3]
 
     resistance_levels = [x["strike"] for x in high_ce_oi]
     support_levels = [x["strike"] for x in high_pe_oi]
 
-    # Immediate S/R
     above = [x["strike"] for x in oc_data["near_strikes"] if x["strike"] > spot]
     below = [x["strike"] for x in oc_data["near_strikes"] if x["strike"] < spot]
 
@@ -281,32 +409,27 @@ def master_trade_engine(market, oc_data, greeks_data, atm, expiry_str):
     vwap = calc_vwap(market)
     zones = get_supply_demand_zones(oc_data, price) if oc_data else None
 
-    # ATM greeks
     atm_ce_key = f"NSE:NIFTY{expiry_str}{atm}CE"
     atm_pe_key = f"NSE:NIFTY{expiry_str}{atm}PE"
     atm_ce = greeks_data.get(atm_ce_key, {})
     atm_pe = greeks_data.get(atm_pe_key, {})
 
-    # Signals
     signals = []
 
-    # 1. Trend signal
     bullish = price > vwap
     bearish = price < vwap
     trend = "BULLISH" if bullish else "BEARISH"
 
-    # 2. OI signal
     oi_signal = "NEUTRAL"
     if oc_data:
         pcr = oc_data["pcr"]
         if pcr > 1.3:
-            oi_signal = "BULLISH"  # More puts = support
+            oi_signal = "BULLISH"
         elif pcr < 0.7:
-            oi_signal = "BEARISH"  # More calls = resistance
+            oi_signal = "BEARISH"
         else:
             oi_signal = "NEUTRAL"
 
-    # 3. Greeks signal
     greek_signal = "NEUTRAL"
     if atm_ce and atm_pe:
         ce_delta = abs(atm_ce.get("delta", 0))
@@ -316,7 +439,6 @@ def master_trade_engine(market, oc_data, greeks_data, atm, expiry_str):
         elif pe_delta > ce_delta:
             greek_signal = "BEARISH"
 
-    # 4. Zone signal
     zone_signal = "NEUTRAL"
     if zones:
         if price <= zones["immediate_support"] + 30:
@@ -324,7 +446,6 @@ def master_trade_engine(market, oc_data, greeks_data, atm, expiry_str):
         elif price >= zones["immediate_resistance"] - 30:
             zone_signal = "BEARISH"
 
-    # Count bullish/bearish signals
     bull_count = sum([
         trend == "BULLISH",
         oi_signal == "BULLISH",
@@ -338,7 +459,6 @@ def master_trade_engine(market, oc_data, greeks_data, atm, expiry_str):
         zone_signal == "BEARISH"
     ])
 
-    # Final signal
     if bull_count >= 3:
         final_signal = "CALL BUY"
         strike = atm
@@ -438,7 +558,6 @@ CE → Delta: `{atm_ce.get('delta','N/A')}` | IV: `{atm_ce.get('iv','N/A')}%` | 
 PE → Delta: `{atm_pe.get('delta','N/A')}` | IV: `{atm_pe.get('iv','N/A')}%` | Theta: `{atm_pe.get('theta','N/A')}` | LTP: `{atm_pe.get('ltp','N/A')}`
 """
 
-    # Signal confluence
     msg += f"""
 🎯 **SIGNAL CONFLUENCE**
 Trend: `{res['trend']}` | OI: `{res['oi_signal']}` | Greeks: `{res['greek_signal']}` | Zone: `{res['zone_signal']}`
@@ -543,6 +662,39 @@ async def on_message(message):
     if message.author == client.user:
         return
 
+    # ===========================================
+    # TOKEN UPDATE — Private channel se
+    # ===========================================
+    if message.channel.id == TOKEN_UPDATE_CHANNEL_ID:
+        # Sirf allowed user ka message suno
+        if message.author.id != ALLOWED_USER_ID:
+            await message.delete()
+            return
+
+        new_token = message.content.strip()
+
+        # Token valid hai ya nahi basic check
+        if len(new_token) < 20:
+            await message.channel.send("⚠️ Token bahut chhota lag raha hai. Sahi token paste karo.")
+            return
+
+        await message.channel.send("⏳ Railway mein token update ho raha hai...")
+
+        success, result_msg = update_railway_token(new_token)
+        await message.channel.send(result_msg)
+
+        # Security: Token message delete karo channel se
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return  # Baaki commands check mat karo
+
+    # ===========================================
+    # NORMAL BOT COMMANDS (purana channel)
+    # ===========================================
+
     # FULL ANALYSIS
     if message.content.lower() == "trade!":
         await message.channel.send("⏳ Fetching market data, OI & Greeks...")
@@ -554,20 +706,17 @@ async def on_message(message):
 
         price = market["price"]
 
-        # Fetch all data
         await message.channel.send("📡 Fetching NSE Option Chain...")
         oc_data = get_option_chain()
 
         await message.channel.send("🔢 Fetching Greeks...")
         greeks_data, atm, expiry_str = get_greeks(price)
 
-        # Trade engine
         result = master_trade_engine(market, oc_data, greeks_data, atm, expiry_str)
         formatted = format_output(result, market)
 
         await message.channel.send(formatted)
 
-        # AI Analysis
         await message.channel.send("🤖 Running AI analysis...")
         levels = calculate_levels(market)
         zones = get_supply_demand_zones(oc_data, price) if oc_data else None
