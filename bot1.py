@@ -317,6 +317,12 @@ def get_option_chain_fyers(spot_price):
                 oi = v.get("oi", 0)
                 ltp = v.get("lp", 0)
 
+                import re
+                match = re.search(r'(\d{5})(CE|PE)$', sym)
+                if not match:
+                    continue
+                strike = int(match.group(1))
+
                 # strike extract
                 import re
                 match = re.search(r'(\d{5})(CE|PE)$', sym)
