@@ -75,24 +75,18 @@ def fyers_callback():
         return "<h2>❌ Auth code nahi mila. Dobara try karo.</h2>", 400
 
     try:
-        # Auth code se access token generate karo
-        import urllib.parse
-        params = {
-            "client_id": FYERS_APP_ID,
-            "redirect_uri": FYERS_REDIRECT_URI,
-            "response_type": "code",
-            "state": "discord_bot"
-        }
-        return "https://api-t1.fyers.in/api/v3/generate-authcode?" + urllib.parse.urlencode(params)
-    except Exception as e_unused:
-            client_id=FYERS_APP_ID,
-            secret_key=FYERS_SECRET_KEY,
-            redirect_uri=FYERS_REDIRECT_URI,
-            response_type="code",
-            grant_type="authorization_code"
+        import hashlib
+        app_id_hash = hashlib.sha256(f"{FYERS_APP_ID}:{FYERS_SECRET_KEY}".encode()).hexdigest()
+        token_resp = requests.post(
+            "https://api-t1.fyers.in/api/v3/validate-authcode",
+            json={
+                "grant_type": "authorization_code",
+                "appIdHash": app_id_hash,
+                "code": auth_code
+            },
+            timeout=15
         )
-        session.set_token(auth_code)
-        response = session.generate_token()
+        response = token_resp.json()
 
         if "access_token" not in response:
             error_msg = response.get("message", "Unknown error")
@@ -247,15 +241,8 @@ def get_fyers_login_url() -> str:
             "state": "discord_bot"
         }
         return "https://api-t1.fyers.in/api/v3/generate-authcode?" + urllib.parse.urlencode(params)
-    except Exception as e_unused:
-            client_id=FYERS_APP_ID,
-            secret_key=FYERS_SECRET_KEY,
-            redirect_uri=FYERS_REDIRECT_URI,
-            response_type="code",
-            state="discord_bot"
-        )
-        return session.generate_authcode()
     except Exception as e:
+        return f"ERROR:{str(e)}"
         return f"ERROR:{str(e)}"
 
 
