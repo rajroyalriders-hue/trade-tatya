@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime
 from flask import Flask, request
 import anthropic
-from fyers_apiv3 import fyersModel, accessToken
+from fyers_apiv3 import fyersModel
 import os
 
 # =========================
@@ -76,7 +76,15 @@ def fyers_callback():
 
     try:
         # Auth code se access token generate karo
-        session = accessToken.SessionModel(
+        import urllib.parse
+        params = {
+            "client_id": FYERS_APP_ID,
+            "redirect_uri": FYERS_REDIRECT_URI,
+            "response_type": "code",
+            "state": "discord_bot"
+        }
+        return "https://api-t1.fyers.in/api/v3/generate-authcode?" + urllib.parse.urlencode(params)
+    except Exception as e_unused:
             client_id=FYERS_APP_ID,
             secret_key=FYERS_SECRET_KEY,
             redirect_uri=FYERS_REDIRECT_URI,
@@ -231,7 +239,15 @@ def update_railway_token(new_token: str) -> tuple[bool, str]:
 # =========================
 def get_fyers_login_url() -> str:
     try:
-        session = accessToken.SessionModel(
+        import urllib.parse
+        params = {
+            "client_id": FYERS_APP_ID,
+            "redirect_uri": FYERS_REDIRECT_URI,
+            "response_type": "code",
+            "state": "discord_bot"
+        }
+        return "https://api-t1.fyers.in/api/v3/generate-authcode?" + urllib.parse.urlencode(params)
+    except Exception as e_unused:
             client_id=FYERS_APP_ID,
             secret_key=FYERS_SECRET_KEY,
             redirect_uri=FYERS_REDIRECT_URI,
