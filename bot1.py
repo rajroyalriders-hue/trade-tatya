@@ -20,9 +20,7 @@ MAIN_CHANNEL_ID  = 1498261283584217219
 TOKEN_CHANNEL_ID = 1498884238496239626
 ALLOWED_USER_ID  = 1158032451659120732
 
-RAILWAY_API_TOKEN  = os.getenv("RAILWAY_API_TOKEN")
-RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID")
-RAILWAY_SERVICE_ID = os.getenv("RAILWAY_SERVICE_ID")
+# Railway not used - running on VPS
 
 # =========================
 # INIT
@@ -67,38 +65,40 @@ async def run_in_thread(func, *args, timeout=15):
         return None
 
 # =========================
-# RAILWAY TOKEN UPDATE
+# VPS TOKEN UPDATE
 # =========================
 def _update_railway_token(new_token):
-    headers = {"Authorization": f"Bearer {RAILWAY_API_TOKEN}", "Content-Type": "application/json"}
-    env_resp = requests.post(
-        "https://backboard.railway.app/graphql/v2",
-        json={"query": 'query { project(id: "%s") { environments { edges { node { id name } } } } }' % RAILWAY_PROJECT_ID},
-        headers=headers, timeout=15
-    ).json()
-    envs   = env_resp["data"]["project"]["environments"]["edges"]
-    env_id = next((e["node"]["id"] for e in envs if e["node"]["name"].lower() == "production"), envs[0]["node"]["id"])
-    requests.post(
-        "https://backboard.railway.app/graphql/v2",
-        json={
-            "query": "mutation variableUpsert($input: VariableUpsertInput!) { variableUpsert(input: $input) }",
-            "variables": {"input": {"projectId": RAILWAY_PROJECT_ID, "environmentId": env_id,
-                                    "serviceId": RAILWAY_SERVICE_ID, "name": "FYERS_ACCESS_TOKEN", "value": new_token}}
-        },
-        headers=headers, timeout=15
-    )
-    requests.post(
-        "https://backboard.railway.app/graphql/v2",
-        json={
-            "query": "mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) { serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId) }",
-            "variables": {"serviceId": RAILWAY_SERVICE_ID, "environmentId": env_id}
-        },
-        headers=headers, timeout=15
-    )
+    """Update token in .env file on VPS"""
     global fyers, FYERS_ACCESS_TOKEN
-    FYERS_ACCESS_TOKEN = new_token
-    fyers = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=new_token)
-    return True, "Token update + Railway redeploy! Bot 1-2 min mein restart hoga."
+    try:
+        env_path = "/root/bot/variables.env"
+        try:
+            with open(env_path, "r") as ef:
+                lines = ef.readlines()
+        except:
+            lines = []
+
+        updated = False
+        new_lines = []
+        for line in lines:
+            if line.startswith("FYERS_ACCESS_TOKEN="):
+                new_lines.append("FYERS_ACCESS_TOKEN=" + new_token + "\n")
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append("FYERS_ACCESS_TOKEN=" + new_token + "\n")
+
+        with open(env_path, "w") as ef:
+            ef.writelines(new_lines)
+
+        FYERS_ACCESS_TOKEN = new_token
+        fyers = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=new_token)
+        return True, "Token update ho gaya! Bot ab naye token se kaam karega."
+    except Exception as e:
+        FYERS_ACCESS_TOKEN = new_token
+        fyers = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=new_token)
+        return True, "Token memory mein update ho gaya!"
 
 # =========================
 # SOURCE 1: FYERS (blocking — will be run in thread)
