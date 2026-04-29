@@ -13,7 +13,7 @@ import os
 # =========================
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN")
 CLAUDE_API_KEY     = os.getenv("CLAUDE_API_KEY")
-FYERS_APP_ID       = os.getenv("FYERS_APP_ID", "R19GD9BCZH-200")
+FYERS_APP_ID       = os.getenv("FYERS_APP_ID")
 FYERS_ACCESS_TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 
 MAIN_CHANNEL_ID  = 1498261283584217219
@@ -33,7 +33,20 @@ client           = discord.Client(intents=intents)
 anthropic_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 fyers            = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=FYERS_ACCESS_TOKEN)
 executor         = ThreadPoolExecutor(max_workers=4)
-# Flask removed - not needed for worker
+import threading
+from flask import Flask
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "OK", 200
+
+@flask_app.route("/health")
+def health():
+    return "OK", 200
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)), debug=False, use_reloader=False)
 
 # =========================
 # ASYNC WRAPPER — prevents Discord freeze
@@ -508,94 +521,86 @@ def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data
     }
 
 # =========================
-# FORMAT OUTPUT
+# FORMAT OUTPUT — Compact 2-column
 # =========================
 def format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data):
-    price = market["price"]
-    chg   = res["change"]
-    arrow = "📈" if chg >= 0 else "📉"
-    ae    = "🟢" if "CALL" in res["action"] else ("🔴" if "PUT" in res["action"] else "⚪")
+    price  = market["price"]
+    chg    = res["change"]
+    arrow  = "📈" if chg >= 0 else "📉"
+    sig_e  = "🟢" if "CALL" in res["action"] else ("🔴" if "PUT" in res["action"] else "⚪")
+    trend  = "BULLISH" if res["sb"] > res["sb_bear"] else ("BEARISH" if res["sb_bear"] > res["sb"] else "NEUTRAL")
+    trend_e = "📈" if trend == "BULLISH" else ("📉" if trend == "BEARISH" else "➡️")
 
-    msg = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 **NIFTY PRO SIGNAL** | {datetime.now().strftime("%d %b  %H:%M")}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📡 **Source:** {market.get('all_sources', market.get('source','N/A'))}
+    vix_str  = f"{vix_data['vix']} ({vix_data['level'].split('—')[0].strip()})" if vix_data else "N/A"
+    rsi_str  = f"{rsi} — {rsi_sig.split('—')[0].strip()}" if rsi else "N/A"
+    pcr_str  = str(oc_data["pcr"]) if oc_data else "N/A"
+    atm_str  = str(oc_data["atm"]) if oc_data else "N/A"
 
-💹 **NIFTY50:** `₹{price}` {arrow} `{chg:+.2f}%`
-O:`{market['open']}` H:`{market['high']}` L:`{market['low']}` PC:`{market['prev_close']}`
-VWAP: `{res['vwap']}`"""
+    # Demand/Supply zone strings
+    sup_z = f"₹{zones['demand_zones'][0]} — ₹{zones['demand_zones'][1]}" if len(zones['demand_zones']) >= 2 else f"₹{zones['imm_sup']}"
+    res_z = f"₹{zones['supply_zones'][0]} — ₹{zones['supply_zones'][1]}" if len(zones['supply_zones']) >= 2 else f"₹{zones['imm_res']}"
 
-    if vix_data:
-        msg += f"\n\n⚡ **India VIX:** `{vix_data['vix']}` ({vix_data['chg']:+.2f}%) — {vix_data['level']}"
-    else:
-        msg += f"\n\n⚡ **India VIX:** Unavailable"
-
-    if rsi:
-        bar = "█" * int(rsi/10) + "░" * (10 - int(rsi/10))
-        msg += f"\n\n📉 **RSI(14):** `{rsi}` [{bar}]\n{rsi_sig}"
-    else:
-        msg += f"\n\n📉 **RSI:** Unavailable (market may be closed)"
-
-    msg += f"""
-
-🏗️ **DEMAND & SUPPLY ZONES**
-```
-Supply (Resistance): {" | ".join([str(z) for z in zones["supply_zones"][:3]])}
-Demand (Support):    {" | ".join([str(z) for z in zones["demand_zones"][:3]])}
-Strong Supply: {zones["strong_supply"] if zones["strong_supply"] else "Forming..."}
-Strong Demand: {zones["strong_demand"] if zones["strong_demand"] else "Forming..."}
-Imm Resistance: {zones["imm_res"]}  |  Imm Support: {zones["imm_sup"]}
-```
-📐 P:`{zones['pivot']}` R1:`{zones['r1']}` R2:`{zones['r2']}` R3:`{zones['r3']}`
-   S1:`{zones['s1']}` S2:`{zones['s2']}` S3:`{zones['s3']}`"""
-
-    if oc_data:
-        pe = "🟢" if oc_data["pcr"] > 1.2 else ("🔴" if oc_data["pcr"] < 0.8 else "🟡")
-        msg += f"""
-
-📈 **OPTION CHAIN** (Expiry: {oc_data["expiry"]})
-ATM:`{oc_data["atm"]}` | PCR:{pe}`{oc_data["pcr"]}`
-Call Wall: `{oc_data["max_c_strike"]}` {oc_data["max_c_oi"]:,} ← Resistance
-Put Wall:  `{oc_data["max_p_strike"]}` {oc_data["max_p_oi"]:,} ← Support
-```
-Strike  | CE OI     | PE OI     |C.IV|P.IV"""
-        for s in oc_data["near"][:7]:
-            mk = "◄" if s["strike"] == oc_data["atm"] else " "
-            msg += f"\n{s['strike']}{mk}| {s['c_oi']:>9,} | {s['p_oi']:>9,} |{s['c_iv']:>4}%|{s['p_iv']:>4}%"
-        msg += "\n```"
-    else:
-        msg += "\n\n📈 **Option Chain:** Unavailable (NSE down)"
-
+    # Entry/SL/T lines
     ce = res["atm_ce"]
-    pe_g = res["atm_pe"]
-    if ce or pe_g:
-        msg += f"""
-🔢 **ATM GREEKS**
-CE: LTP`{ce.get('ltp','?')}` IV`{ce.get('iv','?')}%` Δ`{ce.get('delta','?')}` θ`{ce.get('theta','?')}`
-PE: LTP`{pe_g.get('ltp','?')}` IV`{pe_g.get('iv','?')}%` Δ`{pe_g.get('delta','?')}` θ`{pe_g.get('theta','?')}`"""
+    pe = res["atm_pe"]
+
+    if "CALL" in res["action"] and ce:
+        call_entry = f"Demand zone\n₹{zones['demand_zones'][0]} — ₹{zones['demand_zones'][1] if len(zones['demand_zones'])>1 else zones['imm_sup']}" if len(zones['demand_zones'])>=2 else f"₹{zones['imm_sup']}"
+        call_t1    = f"₹{zones['imm_res']}"
+        call_sl    = f"₹{res['sl_spot']} todi ki exit"
+        put_entry  = "Supply zone\nN/A"
+        put_t1     = f"₹{atm_str} strike"
+        put_sl     = f"₹{zones['imm_res']} todi ki exit"
+    elif "PUT" in res["action"] and pe:
+        put_entry  = f"Supply zone\n₹{zones['supply_zones'][0]} — ₹{zones['supply_zones'][1] if len(zones['supply_zones'])>1 else zones['imm_res']}" if len(zones['supply_zones'])>=2 else f"₹{zones['imm_res']}"
+        put_t1     = f"₹{zones['imm_sup']}"
+        put_sl     = f"₹{zones['imm_res']} todi ki exit"
+        call_entry = "Demand zone\nN/A"
+        call_t1    = f"₹{atm_str} strike"
+        call_sl    = f"₹{zones['imm_sup']} todi ki exit"
     else:
-        msg += "\n🔢 **Greeks:** Unavailable (token may have expired)"
+        call_entry = f"₹{zones['imm_sup']}"
+        call_t1    = f"₹{zones['imm_res']}"
+        call_sl    = f"₹{zones['s1']}"
+        put_entry  = f"₹{zones['imm_res']}"
+        put_t1     = f"₹{zones['imm_sup']}"
+        put_sl     = f"₹{zones['r1']}"
 
-    msg += f"\n\n🎯 **SIGNALS** (Bull:`{res['sb']}` Bear:`{res['sb_bear']}`)"
-    for k, v in res["signals"].items():
-        msg += f"\n`{k}:` {v}"
+    rr_str = res["rr"] if res["rr"] != "N/A" else "1:2"
 
-    msg += f"""
+    msg = f"""📊 **Nifty50 — Options Analysis**
+**Nifty50:** ₹{price} {arrow} {chg:+.2f}%
+**Signal:** {trend_e} {trend} — {res['action']}
+**ATM Strike:** {atm_str}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{ae} **SIGNAL: {res['action']}** | Confidence: `{res['confidence']}%`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+🟢 **Demand Zone** — 🔴 **Supply Zone** — ✅ **Risk:Reward**
+{sup_z} — {res_z} — {rr_str}
 
-    if res["option"]:
-        msg += f"""
-Option: `{res['option']}`
-Entry: `₹{res['entry']}` | R:R `{res['rr']}`
-Option SL:`₹{res['sl_opt']}` → T1:`₹{res['t1_opt']}` → T2:`₹{res['t2_opt']}`
-Spot SL:`{res['sl_spot']}` → T1:`{res['t1_spot']}` → T2:`{res['t2_spot']}`"""
-    else:
-        msg += f"\nWait for move above `{zones['imm_res']}` or bounce from `{zones['imm_sup']}`"
+⭐ **India VIX**
+🟡 {vix_str}
 
-    msg += "\n\n⚠️ *Not SEBI registered. Manual execution only.*"
+📉 **RSI(14):** {rsi_str}
+**PCR:** {pcr_str} | **Pivot:** {zones['pivot']} | **Bull/Bear:** {res['sb']}/{res['sb_bear']}
+
+━━━━━━━━━━━━━━━━
+📗 **CALL BUY ({atm_str} CE)**
+```
+Entry: {call_entry}
+Target: {call_t1}
+SL: {call_sl}
+```
+📕 **PUT BUY ({atm_str} PE)**
+```
+Entry: {put_entry}
+Target: {put_t1}
+SL: {put_sl}
+```
+⚡ **Index Entry/Target/SL**
+Entry: ₹{zones['imm_sup']} | T1: ₹{zones['imm_res']} | T2: ₹{zones['r2']} | SL: ₹{zones['s1']}
+
+{sig_e} **Final Signal: {res['action']}** | Confidence: {res['confidence']}%
+*He financial advice nahi. •* {datetime.now().strftime("%d %b %H:%M")}"""
+
     return msg
 
 # =========================
@@ -617,16 +622,14 @@ OI: {oc_str}
 System: {res['action']} ({res['confidence']}%)
 
 Rules: Min 65% confidence. NO TRADE if unclear.
+Reply in this EXACT compact format only, no extra text:
 
-SIGNAL: [CALL BUY/PUT BUY/NO TRADE]
-OPTION:
-ENTRY:
-STOP LOSS:
-TARGET 1:
-TARGET 2:
-CONFIDENCE:
-REASON: (2 lines)
-RISK: (1 line)"""
+**Signal:** BULLISH/BEARISH — CALL BUY / PUT BUY / NO TRADE
+**Option:** NIFTY XXXXX CE/PE
+**Entry:** ₹XX | **SL:** ₹XX | **T1:** ₹XX | **T2:** ₹XX
+**Confidence:** XX%
+**Reason:** (1 line only)
+**Risk:** (1 line only)"""
     try:
         r = anthropic_client.messages.create(
             model="claude-sonnet-4-5", max_tokens=350,
@@ -708,7 +711,7 @@ async def on_message(message):
         await message.channel.send("🤖 AI analysis...")
         ai = await run_in_thread(_get_ai_analysis, market, oc_data, zones, rsi, vix_data, res, timeout=30)
         if ai:
-            await message.channel.send(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🤖 **AI ANALYSIS** | {datetime.now().strftime('%H:%M')}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n{ai}\n\n⚠️ *Not SEBI registered.*")
+            await message.channel.send(f"🤖 **AI Analysis** | {datetime.now().strftime('%H:%M')}\n\n{ai}\n\n*He financial advice nahi.*")
 
     elif cmd == "oi!":
         oc = await run_in_thread(_get_option_chain, timeout=12)
@@ -750,5 +753,6 @@ async def on_message(message):
 # MAIN
 # =========================
 if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
     print("Bot starting...")
     client.run(DISCORD_TOKEN)
