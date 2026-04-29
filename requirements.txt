@@ -4,3 +4,5 @@ anthropic
 requests
 flask
 yfinance
+pandas
+aiohttp
