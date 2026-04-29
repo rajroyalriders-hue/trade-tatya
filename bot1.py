@@ -1,11 +1,9 @@
 import discord
 import requests
-import threading
 import asyncio
 import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from flask import Flask
 import anthropic
 from fyers_apiv3 import fyersModel
 import os
@@ -35,14 +33,7 @@ client           = discord.Client(intents=intents)
 anthropic_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 fyers            = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=FYERS_ACCESS_TOKEN)
 executor         = ThreadPoolExecutor(max_workers=4)
-flask_app        = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return "Pro Trading Bot Running!", 200
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)), debug=False, use_reloader=False)
+# Flask removed - not needed for worker
 
 # =========================
 # ASYNC WRAPPER — prevents Discord freeze
@@ -759,6 +750,5 @@ async def on_message(message):
 # MAIN
 # =========================
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    print("Flask started")
+    print("Bot starting...")
     client.run(DISCORD_TOKEN)
