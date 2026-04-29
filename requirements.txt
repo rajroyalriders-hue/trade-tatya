@@ -3,3 +3,4 @@ fyers-apiv3
 anthropic
 requests
 yfinance
+flask
