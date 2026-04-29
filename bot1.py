@@ -274,77 +274,98 @@ def get_market_data():
         return None
 
 
-def get_option_chain():
+def get_option_chain_fyers(spot_price):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://www.nseindia.com/option-chain",
-        }
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=5)
-        response = session.get(
-            "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
-            headers=headers, timeout=10
-        )
-        data = response.json()
+        # ATM calculate
+        atm = round(spot_price / 50) * 50
 
-        records = data.get("records", {})
-        spot_price = records.get("underlyingValue", 0)
-        expiry_dates = records.get("expiryDates", [])
-        nearest_expiry = expiry_dates[0] if expiry_dates else None
+        # Nearby strikes (adjust kar sakta hai)
+        strikes = [atm - 200, atm - 150, atm - 100, atm - 50,
+                   atm, atm + 50, atm + 100, atm + 150, atm + 200]
+
+        # Expiry calculate (Thursday)
+        today = datetime.now()
+        days_ahead = 3 - today.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        expiry = today.replace(day=today.day + days_ahead)
+        expiry_str = expiry.strftime("%d%b%y").upper()
+
+        symbols = []
+        for s in strikes:
+            symbols.append(f"NSE:NIFTY{expiry_str}{s}CE")
+            symbols.append(f"NSE:NIFTY{expiry_str}{s}PE")
+
+        data = {"symbols": ",".join(symbols)}
+        response = fyers.quotes(data=data)
+
+        total_call_oi = 0
+        total_put_oi = 0
+        max_call_oi = 0
+        max_put_oi = 0
+        max_call_strike = 0
+        max_put_strike = 0
 
         oi_data = []
-        total_call_oi = total_put_oi = 0
-        max_call_oi = max_put_oi = 0
-        max_call_strike = max_put_strike = 0
 
-        for item in records.get("data", []):
-            if item.get("expiryDate") != nearest_expiry:
-                continue
-            strike = item.get("strikePrice", 0)
-            ce = item.get("CE", {})
-            pe = item.get("PE", {})
+        if "d" in response:
+            for item in response["d"]:
+                sym = item.get("n", "")
+                v = item.get("v", {})
 
-            ce_oi  = ce.get("openInterest", 0) or 0
-            pe_oi  = pe.get("openInterest", 0) or 0
-            ce_coi = ce.get("changeinOpenInterest", 0) or 0
-            pe_coi = pe.get("changeinOpenInterest", 0) or 0
-            ce_iv  = ce.get("impliedVolatility", 0) or 0
-            pe_iv  = pe.get("impliedVolatility", 0) or 0
-            ce_ltp = ce.get("lastPrice", 0) or 0
-            pe_ltp = pe.get("lastPrice", 0) or 0
+                oi = v.get("oi", 0)
+                ltp = v.get("lp", 0)
 
-            total_call_oi += ce_oi
-            total_put_oi  += pe_oi
+                # strike extract
+                import re
+                match = re.search(r'(\d{5})(CE|PE)$', sym)
+               if not match:
+                   continue
+               strike = int(match.group(1))
 
-            if ce_oi > max_call_oi:
-                max_call_oi = ce_oi; max_call_strike = strike
-            if pe_oi > max_put_oi:
-                max_put_oi = pe_oi; max_put_strike = strike
+                if sym.endswith("CE"):
+                    total_call_oi += oi
+                    if oi > max_call_oi:
+                        max_call_oi = oi
+                        max_call_strike = strike
+                    oi_data.append({"strike": strike, "ce_oi": oi, "ce_ltp": ltp, "pe_oi": 0, "pe_ltp": 0})
 
-            oi_data.append({
-                "strike": strike, "ce_oi": ce_oi, "pe_oi": pe_oi,
-                "ce_coi": ce_coi, "pe_coi": pe_coi,
-                "ce_iv": ce_iv, "pe_iv": pe_iv,
-                "ce_ltp": ce_ltp, "pe_ltp": pe_ltp,
-            })
+                elif sym.endswith("PE"):
+                    total_put_oi += oi
+                    if oi > max_put_oi:
+                        max_put_oi = oi
+                        max_put_strike = strike
+                    oi_data.append({"strike": strike, "ce_oi": 0, "ce_ltp": 0, "pe_oi": oi, "pe_ltp": ltp})
+
+        # Merge CE & PE
+        merged = {}
+        for item in oi_data:
+            s = item["strike"]
+            if s not in merged:
+                merged[s] = {"strike": s, "ce_oi": 0, "pe_oi": 0}
+            merged[s]["ce_oi"] += item["ce_oi"]
+            merged[s]["pe_oi"] += item["pe_oi"]
+
+        merged_list = list(merged.values())
 
         pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 0
-        atm_strike = round(spot_price / 50) * 50
-        atm_data   = next((x for x in oi_data if x["strike"] == atm_strike), None)
-        near_strikes = sorted(oi_data, key=lambda x: abs(x["strike"] - spot_price))[:10]
 
         return {
-            "spot": spot_price, "expiry": nearest_expiry, "pcr": pcr,
-            "total_call_oi": total_call_oi, "total_put_oi": total_put_oi,
-            "max_call_strike": max_call_strike, "max_call_oi": max_call_oi,
-            "max_put_strike": max_put_strike, "max_put_oi": max_put_oi,
-            "atm_strike": atm_strike, "atm_data": atm_data, "near_strikes": near_strikes,
+            "spot": spot_price,
+            "expiry": expiry_str,
+            "pcr": pcr,
+            "total_call_oi": total_call_oi,
+            "total_put_oi": total_put_oi,
+            "max_call_strike": max_call_strike,
+            "max_call_oi": max_call_oi,
+            "max_put_strike": max_put_strike,
+            "max_put_oi": max_put_oi,
+            "atm_strike": atm,
+            "near_strikes": merged_list
         }
+
     except Exception as e:
-        print(f"Option chain error: {e}")
+        print("Fyers OI Error:", e)
         return None
 
 
@@ -394,8 +415,8 @@ def get_supply_demand_zones(oc_data, spot):
     supply_zone = oc_data["max_call_strike"]
     demand_zone = oc_data["max_put_strike"]
 
-    high_ce_oi = sorted(oc_data["near_strikes"], key=lambda x: x["ce_oi"], reverse=True)[:3]
-    high_pe_oi = sorted(oc_data["near_strikes"], key=lambda x: x["pe_oi"], reverse=True)[:3]
+    high_ce_oi = sorted(oc_data["near_strikes"], key=lambda x: x["ce_oi",0], reverse=True)[:3]
+    high_pe_oi = sorted(oc_data["near_strikes"], key=lambda x: x["pe_oi",0], reverse=True)[:3]
 
     above = [x["strike"] for x in oc_data["near_strikes"] if x["strike"] > spot]
     below = [x["strike"] for x in oc_data["near_strikes"] if x["strike"] < spot]
@@ -679,8 +700,8 @@ async def on_message(message):
 
         price = market["price"]
 
-        await message.channel.send("📡 Fetching NSE Option Chain...")
-        oc_data = get_option_chain()
+        await message.channel.send("📡 Fetching Fyers Option Chain...")
+        oc_data = get_option_chain_fyers(price)
 
         await message.channel.send("🔢 Fetching Greeks...")
         greeks_data, atm, expiry_str = get_greeks(price)
@@ -707,7 +728,9 @@ async def on_message(message):
 
     elif message.content.lower() == "oi!":
         await message.channel.send("📡 Fetching OI data...")
-        oc_data = get_option_chain()
+        market = get_market_data()
+        price = market["price"]
+        oc_data = get_option_chain_fyers(price)
         if not oc_data:
             await message.channel.send("❌ OI fetch failed")
             return
