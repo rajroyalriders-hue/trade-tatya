@@ -46,21 +46,23 @@ ASSETS = {
     },
     "gold": {
         "name": "MCX Gold",
-        "fyers_symbol": "MCX:GOLD25MAYFUT",
-        "yahoo_symbol": "GC=F",
+        "fyers_symbol": None,
+        "yahoo_symbol": None,
         "type": "commodity",
         "lot_size": 100,
         "strike_gap": 100,
-        "unit": "₹/10g",
+        "unit": "₹",
+        "mcx_key": "gold",
     },
     "oil": {
         "name": "MCX Crude Oil",
-        "fyers_symbol": "MCX:CRUDEOIL25MAYFUT",
-        "yahoo_symbol": "CL=F",
+        "fyers_symbol": None,
+        "yahoo_symbol": None,
         "type": "commodity",
         "lot_size": 100,
-        "strike_gap": 50,
-        "unit": "₹/bbl",
+        "strike_gap": 100,
+        "unit": "₹",
+        "mcx_key": "oil",
     },
     "equity": {
         "name": "Top Volume Stocks",
@@ -107,6 +109,44 @@ async def run_in_thread(func, *args, timeout=15):
     except Exception as e:
         print(f"ERROR in {func.__name__}: {e}")
         return None
+
+
+# =========================
+# AUTO MCX SYMBOL
+# =========================
+def get_mcx_symbol(commodity):
+    """Auto generate current/next month MCX symbol"""
+    today = datetime.now()
+    # MCX expiry is around 5th of each month
+    # If past 4th, use next month
+    # Try current month first, fallback to next month
+    month_str = today.strftime("%b").upper()
+    year_str  = today.strftime("%y")
+    next_month = today.replace(day=1) + timedelta(days=32)
+    nm_str = next_month.strftime("%b").upper()
+    ny_str = next_month.strftime("%y")
+
+    if commodity == "gold":
+        # Gold expiry around 5th of month — use next-to-next month
+        # Gold trades 2 months ahead typically
+        two_months = today.replace(day=1) + timedelta(days=63)
+        tm_str = two_months.strftime("%b").upper()
+        ty_str = two_months.strftime("%y")
+        if today.day > 4:
+            sym = "MCX:GOLD" + ty_str + tm_str + "FUT"
+        else:
+            sym = "MCX:GOLD" + ny_str + nm_str + "FUT"
+    elif commodity == "oil":
+        # Crude oil expiry around 20th
+        if today.day > 18:
+            sym = "MCX:CRUDEOIL" + ny_str + nm_str + "FUT"
+        else:
+            sym = "MCX:CRUDEOIL" + year_str + month_str + "FUT"
+    else:
+        sym = "MCX:" + commodity.upper() + year_str + month_str + "FUT"
+
+    print("MCX Symbol: " + sym)
+    return sym
 
 # =========================
 # TOKEN UPDATE
@@ -223,9 +263,14 @@ async def get_market_data(asset_key):
     if asset_key == "equity":
         return await run_in_thread(_get_top_stocks, timeout=15)
 
+    # Auto symbol for MCX commodities
+    fyers_sym = asset.get("fyers_symbol")
+    if asset.get("mcx_key"):
+        fyers_sym = get_mcx_symbol(asset["mcx_key"])
+
     tasks = []
-    if asset.get("fyers_symbol"):
-        tasks.append(run_in_thread(_get_fyers_data, asset["fyers_symbol"], timeout=10))
+    if fyers_sym:
+        tasks.append(run_in_thread(_get_fyers_data, fyers_sym, timeout=10))
     if asset.get("yahoo_symbol"):
         tasks.append(run_in_thread(_get_yahoo_data, asset["yahoo_symbol"], timeout=12))
     if asset_key == "nifty":
