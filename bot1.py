@@ -46,23 +46,21 @@ ASSETS = {
     },
     "gold": {
         "name": "MCX Gold",
-        "fyers_symbol": None,
-        "yahoo_symbol": None,
+        "fyers_symbol": "MCX:GOLD25MAYFUT",
+        "yahoo_symbol": "GC=F",
         "type": "commodity",
         "lot_size": 100,
         "strike_gap": 100,
-        "unit": "₹",
-        "mcx_key": "gold",
+        "unit": "₹/10g",
     },
     "oil": {
         "name": "MCX Crude Oil",
-        "fyers_symbol": None,
-        "yahoo_symbol": None,
+        "fyers_symbol": "MCX:CRUDEOIL25MAYFUT",
+        "yahoo_symbol": "CL=F",
         "type": "commodity",
         "lot_size": 100,
-        "strike_gap": 100,
-        "unit": "₹",
-        "mcx_key": "oil",
+        "strike_gap": 50,
+        "unit": "₹/bbl",
     },
     "equity": {
         "name": "Top Volume Stocks",
@@ -109,30 +107,6 @@ async def run_in_thread(func, *args, timeout=15):
     except Exception as e:
         print(f"ERROR in {func.__name__}: {e}")
         return None
-
-
-# =========================
-# AUTO MCX SYMBOL
-# =========================
-def get_mcx_symbol(commodity):
-    """Auto generate current/next month MCX symbol"""
-    today = datetime.now()
-    # MCX expiry is around 20th of each month
-    # If past 15th, use next month
-    if today.day > 15:
-        next_month = today.replace(day=1) + timedelta(days=32)
-        month_str = next_month.strftime("%b").upper()
-        year_str  = next_month.strftime("%y")
-    else:
-        month_str = today.strftime("%b").upper()
-        year_str  = today.strftime("%y")
-    
-    symbols = {
-        "gold":  f"MCX:GOLD{year_str}{month_str}FUT",
-        "oil":   f"MCX:CRUDEOIL{year_str}{month_str}FUT",
-        "silver": f"MCX:SILVER{year_str}{month_str}FUT",
-    }
-    return symbols.get(commodity, "")
 
 # =========================
 # TOKEN UPDATE
@@ -249,14 +223,9 @@ async def get_market_data(asset_key):
     if asset_key == "equity":
         return await run_in_thread(_get_top_stocks, timeout=15)
 
-    # Auto symbol for MCX commodities
-    fyers_sym = asset.get("fyers_symbol")
-    if asset.get("mcx_key"):
-        fyers_sym = get_mcx_symbol(asset["mcx_key"])
-
     tasks = []
-    if fyers_sym:
-        tasks.append(run_in_thread(_get_fyers_data, fyers_sym, timeout=10))
+    if asset.get("fyers_symbol"):
+        tasks.append(run_in_thread(_get_fyers_data, asset["fyers_symbol"], timeout=10))
     if asset.get("yahoo_symbol"):
         tasks.append(run_in_thread(_get_yahoo_data, asset["yahoo_symbol"], timeout=12))
     if asset_key == "nifty":
