@@ -47,7 +47,7 @@ ASSETS = {
     "gold": {
         "name": "MCX Gold",
         "fyers_symbol": None,
-        "yahoo_symbol": "GLD",
+        "yahoo_symbol": None,
         "type": "commodity",
         "lot_size": 100,
         "strike_gap": 100,
@@ -60,7 +60,7 @@ ASSETS = {
         "yahoo_symbol": None,
         "type": "commodity",
         "lot_size": 100,
-        "strike_gap": 50,
+        "strike_gap": 100,
         "unit": "₹",
         "mcx_key": "oil",
     },
