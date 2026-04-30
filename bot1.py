@@ -1,12 +1,14 @@
 import discord
 import requests
+import threading
 import asyncio
-import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from flask import Flask
 import anthropic
 from fyers_apiv3 import fyersModel
 import os
+import math
 
 # =========================
 # CONFIG
@@ -15,12 +17,57 @@ DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN")
 CLAUDE_API_KEY     = os.getenv("CLAUDE_API_KEY")
 FYERS_APP_ID       = os.getenv("FYERS_APP_ID", "R19GD9BCZH-200")
 FYERS_ACCESS_TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
+FYERS_SECRET_KEY   = os.getenv("FYERS_SECRET_KEY")
 
-MAIN_CHANNEL_ID  = 1498261283584217219
 TOKEN_CHANNEL_ID = 1498884238496239626
 ALLOWED_USER_ID  = 1158032451659120732
 
-# Railway not used - running on VPS
+# =========================
+# ASSET CONFIG
+# =========================
+ASSETS = {
+    "nifty": {
+        "name": "Nifty50",
+        "fyers_symbol": "NSE:NIFTY50-INDEX",
+        "yahoo_symbol": "^NSEI",
+        "type": "index",
+        "lot_size": 25,
+        "strike_gap": 50,
+        "unit": "₹",
+    },
+    "sensex": {
+        "name": "Sensex",
+        "fyers_symbol": "BSE:SENSEX-INDEX",
+        "yahoo_symbol": "^BSESN",
+        "type": "index",
+        "lot_size": 10,
+        "strike_gap": 100,
+        "unit": "₹",
+    },
+    "gold": {
+        "name": "MCX Gold",
+        "fyers_symbol": "MCX:GOLD25MAYFUT",
+        "yahoo_symbol": "GC=F",
+        "type": "commodity",
+        "lot_size": 100,
+        "strike_gap": 100,
+        "unit": "₹/10g",
+    },
+    "oil": {
+        "name": "MCX Crude Oil",
+        "fyers_symbol": "MCX:CRUDEOIL25MAYFUT",
+        "yahoo_symbol": "CL=F",
+        "type": "commodity",
+        "lot_size": 100,
+        "strike_gap": 50,
+        "unit": "₹/bbl",
+    },
+    "equity": {
+        "name": "Top Volume Stocks",
+        "type": "equity",
+        "unit": "₹",
+    },
+}
 
 # =========================
 # INIT
@@ -30,14 +77,12 @@ intents.message_content = True
 client           = discord.Client(intents=intents)
 anthropic_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 fyers            = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=FYERS_ACCESS_TOKEN)
-executor         = ThreadPoolExecutor(max_workers=4)
-import threading
-from flask import Flask
-flask_app = Flask(__name__)
+executor         = ThreadPoolExecutor(max_workers=8)
+flask_app        = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return "OK", 200
+    return "Pro Trading Bot Running!", 200
 
 @flask_app.route("/health")
 def health():
@@ -47,10 +92,9 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)), debug=False, use_reloader=False)
 
 # =========================
-# ASYNC WRAPPER — prevents Discord freeze
+# ASYNC WRAPPER
 # =========================
 async def run_in_thread(func, *args, timeout=15):
-    """Run blocking function in thread pool with timeout"""
     loop = asyncio.get_event_loop()
     try:
         return await asyncio.wait_for(
@@ -58,17 +102,16 @@ async def run_in_thread(func, *args, timeout=15):
             timeout=timeout
         )
     except asyncio.TimeoutError:
-        print(f"TIMEOUT: {func.__name__} took too long")
+        print(f"TIMEOUT: {func.__name__}")
         return None
     except Exception as e:
         print(f"ERROR in {func.__name__}: {e}")
         return None
 
 # =========================
-# VPS TOKEN UPDATE
+# TOKEN UPDATE
 # =========================
-def _update_railway_token(new_token):
-    """Update token in .env file on VPS"""
+def _update_token(new_token):
     global fyers, FYERS_ACCESS_TOKEN
     try:
         env_path = "/root/bot/variables.env"
@@ -77,7 +120,6 @@ def _update_railway_token(new_token):
                 lines = ef.readlines()
         except:
             lines = []
-
         updated = False
         new_lines = []
         for line in lines:
@@ -88,24 +130,22 @@ def _update_railway_token(new_token):
                 new_lines.append(line)
         if not updated:
             new_lines.append("FYERS_ACCESS_TOKEN=" + new_token + "\n")
-
         with open(env_path, "w") as ef:
             ef.writelines(new_lines)
-
         FYERS_ACCESS_TOKEN = new_token
         fyers = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=new_token)
-        return True, "Token update ho gaya! Bot ab naye token se kaam karega."
+        return True, "✅ Token update ho gaya! Bot ready hai."
     except Exception as e:
         FYERS_ACCESS_TOKEN = new_token
         fyers = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=new_token)
-        return True, "Token memory mein update ho gaya!"
+        return True, "✅ Token memory mein update ho gaya!"
 
 # =========================
-# SOURCE 1: FYERS (blocking — will be run in thread)
+# MARKET DATA — FYERS
 # =========================
-def _get_nifty_fyers():
+def _get_fyers_data(symbol):
     try:
-        resp = fyers.quotes(data={"symbols": "NSE:NIFTY50-INDEX"})
+        resp = fyers.quotes(data={"symbols": symbol})
         if "d" not in resp or not resp["d"]:
             return None
         v = resp["d"][0].get("v", {})
@@ -120,16 +160,16 @@ def _get_nifty_fyers():
             "source": "Fyers"
         }
     except Exception as e:
-        print(f"Fyers error: {e}")
+        print(f"Fyers error {symbol}: {e}")
         return None
 
 # =========================
-# SOURCE 2: YAHOO (blocking)
+# MARKET DATA — YAHOO
 # =========================
-def _get_nifty_yahoo():
+def _get_yahoo_data(symbol):
     try:
         import yfinance as yf
-        ticker = yf.Ticker("^NSEI")
+        ticker = yf.Ticker(symbol)
         hist   = ticker.history(period="2d", interval="1m")
         info   = ticker.fast_info
         if hist.empty:
@@ -146,19 +186,23 @@ def _get_nifty_yahoo():
             "source": "Yahoo"
         }
     except Exception as e:
-        print(f"Yahoo error: {e}")
+        print(f"Yahoo error {symbol}: {e}")
         return None
 
 # =========================
-# SOURCE 3: NSE DIRECT (blocking)
+# MARKET DATA — NSE (Index only)
 # =========================
-def _get_nifty_nse():
+def _get_nse_data(symbol_name):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://www.nseindia.com"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com",
+        }
         s = requests.Session()
-        s.get("https://www.nseindia.com", headers=headers, timeout=5)
+        s.get("https://www.nseindia.com", headers=headers, timeout=6)
         r = s.get("https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050", headers=headers, timeout=8)
-        nifty = next((x for x in r.json()["data"] if x["symbol"] == "NIFTY 50"), None)
+        nifty = next((x for x in r.json()["data"] if x["symbol"] == symbol_name), None)
         if not nifty:
             return None
         return {
@@ -173,15 +217,23 @@ def _get_nifty_nse():
         print(f"NSE error: {e}")
         return None
 
-async def get_market_data():
-    """Try all 3 sources concurrently with timeout"""
-    tasks = [
-        run_in_thread(_get_nifty_fyers, timeout=10),
-        run_in_thread(_get_nifty_yahoo, timeout=12),
-        run_in_thread(_get_nifty_nse,   timeout=10),
-    ]
+async def get_market_data(asset_key):
+    asset = ASSETS[asset_key]
+
+    if asset_key == "equity":
+        return await run_in_thread(_get_top_stocks, timeout=15)
+
+    tasks = []
+    if asset.get("fyers_symbol"):
+        tasks.append(run_in_thread(_get_fyers_data, asset["fyers_symbol"], timeout=10))
+    if asset.get("yahoo_symbol"):
+        tasks.append(run_in_thread(_get_yahoo_data, asset["yahoo_symbol"], timeout=12))
+    if asset_key == "nifty":
+        tasks.append(run_in_thread(_get_nse_data, "NIFTY 50", timeout=10))
+
     results = await asyncio.gather(*tasks, return_exceptions=True)
     working = [r for r in results if r and not isinstance(r, Exception) and r.get("price", 0) > 0]
+
     if not working:
         return None
     primary = working[0]
@@ -189,7 +241,61 @@ async def get_market_data():
     return primary
 
 # =========================
-# RSI CALCULATION
+# TOP VOLUME STOCKS
+# =========================
+def _get_top_stocks():
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com",
+        }
+        s = requests.Session()
+        s.get("https://www.nseindia.com", headers=headers, timeout=6)
+        r = s.get("https://www.nseindia.com/api/live-analysis-volume-gainers", headers=headers, timeout=10)
+        data = r.json().get("data", [])[:5]
+        stocks = []
+        for item in data:
+            stocks.append({
+                "symbol":     item.get("symbol", ""),
+                "price":      round(float(item.get("lastPrice", 0)), 2),
+                "change":     round(float(item.get("pChange", 0)), 2),
+                "volume":     item.get("totalTradedVolume", 0),
+                "high":       round(float(item.get("dayHigh", 0)), 2),
+                "low":        round(float(item.get("dayLow", 0)), 2),
+                "prev_close": round(float(item.get("previousClose", 0)), 2),
+            })
+        return stocks if stocks else None
+    except Exception as e:
+        print(f"Top stocks error: {e}")
+        return _get_top_stocks_yahoo()
+
+def _get_top_stocks_yahoo():
+    try:
+        import yfinance as yf
+        symbols = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS"]
+        stocks  = []
+        for sym in symbols:
+            try:
+                t    = yf.Ticker(sym)
+                info = t.fast_info
+                stocks.append({
+                    "symbol":     sym.replace(".NS", ""),
+                    "price":      round(float(info.last_price), 2),
+                    "change":     0,
+                    "volume":     int(info.three_month_average_volume or 0),
+                    "high":       round(float(info.day_high or 0), 2),
+                    "low":        round(float(info.day_low or 0), 2),
+                    "prev_close": round(float(info.previous_close or 0), 2),
+                })
+            except:
+                pass
+        return stocks if stocks else None
+    except:
+        return None
+
+# =========================
+# RSI
 # =========================
 def _calc_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -206,22 +312,22 @@ def _calc_rsi(prices, period=14):
         return 100.0
     return round(100 - (100 / (1 + ag / al)), 2)
 
-def _get_rsi_data():
+def _get_rsi(yahoo_sym, fyers_sym):
     prices = []
     src    = ""
     try:
         import yfinance as yf
-        hist = yf.Ticker("^NSEI").history(period="5d", interval="5m")
+        hist = yf.Ticker(yahoo_sym).history(period="5d", interval="5m")
         if not hist.empty:
             prices = list(hist["Close"])
             src    = "Yahoo"
     except:
         pass
-    if not prices:
+    if not prices and fyers_sym:
         try:
             today = datetime.now()
             resp  = fyers.history(data={
-                "symbol": "NSE:NIFTY50-INDEX", "resolution": "5", "date_format": "1",
+                "symbol": fyers_sym, "resolution": "5", "date_format": "1",
                 "range_from": (today - timedelta(days=5)).strftime("%Y-%m-%d"),
                 "range_to":   today.strftime("%Y-%m-%d"), "cont_flag": "1"
             })
@@ -235,17 +341,17 @@ def _get_rsi_data():
     rsi = _calc_rsi(prices)
     if rsi is None:
         return None, None, src
-    if rsi >= 70:   sig = f"Overbought — Strong selling pressure"
-    elif rsi >= 60: sig = f"Bullish momentum"
-    elif rsi >= 45: sig = f"Neutral zone"
-    elif rsi >= 30: sig = f"Bearish momentum"
-    else:           sig = f"Oversold — Buying opportunity"
+    if rsi >= 70:   sig = "Overbought — Selling pressure"
+    elif rsi >= 60: sig = "Bullish momentum"
+    elif rsi >= 45: sig = "Neutral zone"
+    elif rsi >= 30: sig = "Bearish momentum"
+    else:           sig = "Oversold — Buying opportunity"
     return rsi, sig, src
 
 # =========================
 # INDIA VIX
 # =========================
-def _get_india_vix():
+def _get_vix():
     try:
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com"}
         s = requests.Session()
@@ -254,8 +360,8 @@ def _get_india_vix():
         vd = r.json()["data"][0]
         vx = round(float(vd.get("lastPrice", 0)), 2)
         ch = round(float(vd.get("pChange", 0)), 2)
-        if vx < 13:   lv = "Very Low (Complacent)"
-        elif vx < 16: lv = "Low — Stable trending"
+        if vx < 13:   lv = "Very Low"
+        elif vx < 16: lv = "Low — Stable"
         elif vx < 20: lv = "Medium — Normal"
         elif vx < 25: lv = "High — Caution"
         else:         lv = "Very High — Panic"
@@ -265,27 +371,21 @@ def _get_india_vix():
         return None
 
 # =========================
-# OPTION CHAIN
+# OPTION CHAIN — NSE
 # =========================
-def _get_option_chain():
+def _get_oc_nse(index="NIFTY"):
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
+            "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.nseindia.com/option-chain",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin",
         }
         s = requests.Session()
         s.get("https://www.nseindia.com", headers=headers, timeout=8)
         s.get("https://www.nseindia.com/option-chain", headers=headers, timeout=8)
-        r = s.get("https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY", headers=headers, timeout=12)
+        r = s.get(f"https://www.nseindia.com/api/option-chain-indices?symbol={index}", headers=headers, timeout=12)
         if r.status_code != 200:
-            print(f"OC status: {r.status_code}")
             return None
         records = r.json().get("records", {})
         spot    = records.get("underlyingValue", 0)
@@ -306,8 +406,7 @@ def _get_option_chain():
             if c_oi > max_c_oi: max_c_oi = c_oi; max_c_strike = strike
             if p_oi > max_p_oi: max_p_oi = p_oi; max_p_strike = strike
             oi_data.append({
-                "strike": strike,
-                "c_oi": c_oi, "p_oi": p_oi,
+                "strike": strike, "c_oi": c_oi, "p_oi": p_oi,
                 "c_coi": ce.get("changeinOpenInterest", 0) or 0,
                 "p_coi": pe.get("changeinOpenInterest", 0) or 0,
                 "c_iv": ce.get("impliedVolatility", 0) or 0,
@@ -315,8 +414,11 @@ def _get_option_chain():
                 "c_ltp": ce.get("lastPrice", 0) or 0,
                 "p_ltp": pe.get("lastPrice", 0) or 0,
             })
-        pcr      = round(total_p / total_c, 2) if total_c > 0 else 0
-        atm      = round(spot / 50) * 50
+        if total_c == 0:
+            return None
+        pcr      = round(total_p / total_c, 2)
+        gap      = ASSETS["nifty"]["strike_gap"] if index == "NIFTY" else 100
+        atm      = round(spot / gap) * gap
         atm_data = next((x for x in oi_data if x["strike"] == atm), None)
         near     = sorted(oi_data, key=lambda x: abs(x["strike"] - spot))[:12]
         return {
@@ -327,49 +429,58 @@ def _get_option_chain():
             "atm": atm, "atm_data": atm_data, "near": near,
         }
     except Exception as e:
-        print(f"OC error: {e}")
+        print(f"OC NSE error: {e}")
         return None
 
 # =========================
-# GREEKS
+# GREEKS — FYERS
 # =========================
-def _get_greeks(spot, oc_data=None):
-    atm        = round(spot / 50) * 50
+def _get_greeks(spot, asset_key, oc_data=None):
+    asset      = ASSETS[asset_key]
+    gap        = asset.get("strike_gap", 50)
+    atm        = round(spot / gap) * gap
     expiry_str = ""
+    greeks     = {}
     try:
         today      = datetime.now()
         days_ahead = (3 - today.weekday()) % 7
         if days_ahead == 0: days_ahead = 7
         expiry_str = (today + timedelta(days=days_ahead)).strftime("%d%b%y").upper()
-        resp = fyers.quotes(data={"symbols": f"NSE:NIFTY{expiry_str}{atm}CE,NSE:NIFTY{expiry_str}{atm}PE"})
-        greeks = {}
-        if "d" in resp and resp["d"]:
-            for item in resp["d"]:
-                sym = item.get("n", "")
-                v   = item.get("v", {})
-                if v.get("lp", 0) > 0:
-                    greeks[sym] = {
-                        "ltp":   round(float(v.get("lp", 0)), 2),
-                        "delta": v.get("delta", 0), "gamma": v.get("gamma", 0),
-                        "theta": v.get("theta", 0), "vega":  v.get("vega", 0),
-                        "iv":    v.get("iv", 0),
-                    }
-        if greeks:
-            return greeks, atm, expiry_str
+
+        if asset_key in ["nifty", "sensex"]:
+            prefix = "NIFTY" if asset_key == "nifty" else "SENSEX"
+            exchange = "NSE" if asset_key == "nifty" else "BSE"
+            symbols = [
+                f"{exchange}:{prefix}{expiry_str}{atm}CE",
+                f"{exchange}:{prefix}{expiry_str}{atm}PE",
+            ]
+            resp = fyers.quotes(data={"symbols": ",".join(symbols)})
+            if "d" in resp and resp["d"]:
+                for item in resp["d"]:
+                    sym = item.get("n", "")
+                    v   = item.get("v", {})
+                    if v.get("lp", 0) > 0:
+                        greeks[sym] = {
+                            "ltp":   round(float(v.get("lp", 0)), 2),
+                            "delta": v.get("delta", 0),
+                            "theta": v.get("theta", 0),
+                            "iv":    v.get("iv", 0),
+                        }
     except Exception as e:
         print(f"Greeks error: {e}")
-    # Fallback from OC data
-    greeks = {}
-    if oc_data and oc_data.get("atm_data"):
+
+    # Fallback from OC
+    if not greeks and oc_data and oc_data.get("atm_data"):
         ad = oc_data["atm_data"]
-        greeks[f"CE_{atm}"] = {"ltp": ad["c_ltp"], "iv": ad["c_iv"], "delta": 0.5,  "theta": -8, "vega": 12}
-        greeks[f"PE_{atm}"] = {"ltp": ad["p_ltp"], "iv": ad["p_iv"], "delta": -0.5, "theta": -8, "vega": 12}
+        greeks[f"CE_{atm}"] = {"ltp": ad["c_ltp"], "iv": ad["c_iv"], "delta": 0.5,  "theta": -8}
+        greeks[f"PE_{atm}"] = {"ltp": ad["p_ltp"], "iv": ad["p_iv"], "delta": -0.5, "theta": -8}
+
     return greeks, atm, expiry_str
 
 # =========================
 # DEMAND SUPPLY ZONES
 # =========================
-def get_zones(market, oc_data):
+def get_zones(market):
     price = market["price"]
     high  = market["high"]
     low   = market["low"]
@@ -385,14 +496,6 @@ def get_zones(market, oc_data):
     supply = [r1, r2, r3]
     demand = [s1, s2, s3]
 
-    if oc_data:
-        supply.append(oc_data["max_c_strike"])
-        demand.append(oc_data["max_p_strike"])
-        top_c = sorted(oc_data["near"], key=lambda x: x["c_oi"], reverse=True)[:2]
-        top_p = sorted(oc_data["near"], key=lambda x: x["p_oi"], reverse=True)[:2]
-        supply += [x["strike"] for x in top_c]
-        demand += [x["strike"] for x in top_p]
-
     base = round(price / 100) * 100
     for i in range(-3, 4):
         lvl = base + i * 100
@@ -402,23 +505,10 @@ def get_zones(market, oc_data):
     supply_sorted = sorted(set([z for z in supply if z > price]))[:4]
     demand_sorted = sorted(set([z for z in demand if z < price]), reverse=True)[:4]
 
-    cnt_s = {}
-    cnt_d = {}
-    for z in supply:
-        if z > price:
-            k = round(z/50)*50; cnt_s[k] = cnt_s.get(k,0)+1
-    for z in demand:
-        if z < price:
-            k = round(z/50)*50; cnt_d[k] = cnt_d.get(k,0)+1
-
-    strong_supply = sorted([k for k,v in cnt_s.items() if v>=2 and k>price])[:2]
-    strong_demand = sorted([k for k,v in cnt_d.items() if v>=2 and k<price], reverse=True)[:2]
-
     return {
         "supply_zones": supply_sorted, "demand_zones": demand_sorted,
-        "strong_supply": strong_supply, "strong_demand": strong_demand,
-        "imm_res": supply_sorted[0] if supply_sorted else round(price+100,2),
-        "imm_sup": demand_sorted[0] if demand_sorted else round(price-100,2),
+        "imm_res": supply_sorted[0] if supply_sorted else round(price + 100, 2),
+        "imm_sup": demand_sorted[0] if demand_sorted else round(price - 100, 2),
         "pivot": pivot, "r1": r1, "r2": r2, "r3": r3,
         "s1": s1, "s2": s2, "s3": s3,
     }
@@ -426,228 +516,317 @@ def get_zones(market, oc_data):
 # =========================
 # MASTER ENGINE
 # =========================
-def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data):
+def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data, asset_key):
+    asset      = ASSETS[asset_key]
     price      = market["price"]
     vwap       = round((market["high"] + market["low"] + price) / 3, 2)
-    change_pct = round(((price - market["prev_close"]) / market["prev_close"]) * 100, 2)
+    change_pct = round(((price - market["prev_close"]) / market["prev_close"]) * 100, 2) if market["prev_close"] else 0
     signals    = {}
     sb = sb_bear = 0
 
     if price > vwap:
-        signals["VWAP"] = f"Bullish — Price above VWAP ({vwap})"; sb += 1
+        signals["VWAP"] = f"Bullish — Above VWAP ({vwap})"; sb += 1
     else:
-        signals["VWAP"] = f"Bearish — Price below VWAP ({vwap})"; sb_bear += 1
+        signals["VWAP"] = f"Bearish — Below VWAP ({vwap})"; sb_bear += 1
 
     if rsi:
-        if rsi > 70:    signals["RSI"] = f"Overbought ({rsi}) — Bearish signal"; sb_bear += 2
-        elif rsi >= 60: signals["RSI"] = f"Bullish momentum ({rsi})"; sb += 1
-        elif rsi <= 30: signals["RSI"] = f"Oversold ({rsi}) — Bullish signal"; sb += 2
-        elif rsi <= 40: signals["RSI"] = f"Bearish momentum ({rsi})"; sb_bear += 1
+        if rsi > 70:    signals["RSI"] = f"Overbought ({rsi})"; sb_bear += 2
+        elif rsi >= 60: signals["RSI"] = f"Bullish ({rsi})"; sb += 1
+        elif rsi <= 30: signals["RSI"] = f"Oversold ({rsi})"; sb += 2
+        elif rsi <= 40: signals["RSI"] = f"Bearish ({rsi})"; sb_bear += 1
         else:           signals["RSI"] = f"Neutral ({rsi})"
-    else:
-        signals["RSI"] = "N/A"
 
     if oc_data:
         pcr = oc_data["pcr"]
-        if pcr > 1.3:   signals["PCR"] = f"Bullish ({pcr}) — Put writers active"; sb += 1
-        elif pcr < 0.7: signals["PCR"] = f"Bearish ({pcr}) — Call writers active"; sb_bear += 1
+        if pcr > 1.3:   signals["PCR"] = f"Bullish ({pcr})"; sb += 1
+        elif pcr < 0.7: signals["PCR"] = f"Bearish ({pcr})"; sb_bear += 1
         else:           signals["PCR"] = f"Neutral ({pcr})"
         if oc_data.get("atm_data"):
             ad = oc_data["atm_data"]
             if ad["c_coi"] < 0 and ad["p_coi"] > 0:
-                signals["OI Chg"] = "Bullish — CE unwinding, PE adding"; sb += 1
+                signals["OI"] = "Bullish — CE unwinding"; sb += 1
             elif ad["c_coi"] > 0 and ad["p_coi"] < 0:
-                signals["OI Chg"] = "Bearish — CE adding, PE unwinding"; sb_bear += 1
-            else:
-                signals["OI Chg"] = "Mixed"
+                signals["OI"] = "Bearish — PE unwinding"; sb_bear += 1
 
     dist_res = abs(price - zones["imm_res"])
     dist_sup = abs(price - zones["imm_sup"])
-    if dist_sup < 30:
-        signals["Zone"] = f"Near Support ({zones['imm_sup']}) — Bounce zone"; sb += 2
-    elif dist_res < 30:
-        signals["Zone"] = f"Near Resistance ({zones['imm_res']}) — Rejection zone"; sb_bear += 2
+    if dist_sup < zones["imm_res"] * 0.003:
+        signals["Zone"] = f"Near Support ({zones['imm_sup']})"; sb += 2
+    elif dist_res < zones["imm_res"] * 0.003:
+        signals["Zone"] = f"Near Resistance ({zones['imm_res']})"; sb_bear += 2
     elif price > zones["pivot"]:
-        signals["Zone"] = f"Above Pivot ({zones['pivot']}) — Bullish bias"; sb += 1
+        signals["Zone"] = f"Above Pivot ({zones['pivot']})"; sb += 1
     else:
-        signals["Zone"] = f"Below Pivot ({zones['pivot']}) — Bearish bias"; sb_bear += 1
+        signals["Zone"] = f"Below Pivot ({zones['pivot']})"; sb_bear += 1
 
     if vix_data:
         vix = vix_data["vix"]
-        if vix > 22:   signals["VIX"] = f"High VIX ({vix}) — Use spreads"
-        elif vix < 16: signals["VIX"] = f"Low VIX ({vix}) — Buy options"; sb += 1
-        else:          signals["VIX"] = f"Normal VIX ({vix})"
-    else:
-        signals["VIX"] = "N/A"
+        if vix > 22:   signals["VIX"] = f"High ({vix}) — Use spreads"
+        elif vix < 16: signals["VIX"] = f"Low ({vix}) — Good for buying"; sb += 1
+        else:          signals["VIX"] = f"Normal ({vix})"
 
-    ce_key = f"NSE:NIFTY{expiry_str}{atm}CE"
-    pe_key = f"NSE:NIFTY{expiry_str}{atm}PE"
+    ce_key = f"NSE:NIFTY{expiry_str}{atm}CE" if asset_key == "nifty" else f"CE_{atm}"
+    pe_key = f"NSE:NIFTY{expiry_str}{atm}PE" if asset_key == "nifty" else f"PE_{atm}"
     atm_ce = greeks.get(ce_key) or greeks.get(f"CE_{atm}", {})
     atm_pe = greeks.get(pe_key) or greeks.get(f"PE_{atm}", {})
+
     if atm_ce and atm_pe:
         ced = abs(atm_ce.get("delta", 0.5))
         ped = abs(atm_pe.get("delta", 0.5))
-        if ced > ped:   signals["Greeks"] = f"Bullish delta ({ced:.2f} > {ped:.2f})"; sb += 1
-        elif ped > ced: signals["Greeks"] = f"Bearish delta ({ped:.2f} > {ced:.2f})"; sb_bear += 1
-        else:           signals["Greeks"] = "Equal delta"
+        if ced > ped:   signals["Greeks"] = f"Bullish Δ ({ced:.2f})"; sb += 1
+        elif ped > ced: signals["Greeks"] = f"Bearish Δ ({ped:.2f})"; sb_bear += 1
 
     if sb >= 4:
         action = "CALL BUY"
-        option = f"NIFTY {atm} CE"
         entry  = atm_ce.get("ltp", 0) if atm_ce else 0
         sl_o   = round(entry * 0.75, 2)
         t1_o   = round(entry * 1.35, 2)
         t2_o   = round(entry * 1.70, 2)
         conf   = min(int((sb / max(sb + sb_bear, 1)) * 100), 95)
+        option = f"{asset['name'].split()[0] if asset_key not in ['nifty','sensex'] else ('NIFTY' if asset_key=='nifty' else 'SENSEX')} {atm} CE"
     elif sb_bear >= 4:
         action = "PUT BUY"
-        option = f"NIFTY {atm} PE"
         entry  = atm_pe.get("ltp", 0) if atm_pe else 0
         sl_o   = round(entry * 0.75, 2)
         t1_o   = round(entry * 1.35, 2)
         t2_o   = round(entry * 1.70, 2)
         conf   = min(int((sb_bear / max(sb + sb_bear, 1)) * 100), 95)
+        option = f"{asset['name'].split()[0] if asset_key not in ['nifty','sensex'] else ('NIFTY' if asset_key=='nifty' else 'SENSEX')} {atm} PE"
     else:
         action = "NO TRADE"
         option = entry = sl_o = t1_o = t2_o = None
         conf   = 0
 
     rr = "N/A"
-    if entry and sl_o and entry != sl_o:
+    if entry and sl_o and entry != sl_o and t1_o:
         risk   = abs(entry - sl_o)
-        reward = abs(t1_o - entry) if t1_o else 0
+        reward = abs(t1_o - entry)
         rr     = f"1:{round(reward/risk,1)}" if risk > 0 else "N/A"
 
     return {
         "action": action, "option": option, "confidence": conf,
         "entry": round(entry, 2) if entry else None,
         "sl_opt": sl_o, "t1_opt": t1_o, "t2_opt": t2_o,
-        "sl_spot": round(zones["imm_sup"] - 25, 2),
+        "sl_spot": round(zones["imm_sup"] - (price * 0.002), 2),
         "t1_spot": round(zones["imm_res"], 2),
         "t2_spot": round(zones["r2"], 2),
         "rr": rr, "sb": sb, "sb_bear": sb_bear,
         "signals": signals, "vwap": vwap, "change": change_pct,
-        "atm_ce": atm_ce, "atm_pe": atm_pe,
+        "atm_ce": atm_ce, "atm_pe": atm_pe, "atm": atm,
     }
 
 # =========================
-# FORMAT OUTPUT — Compact 2-column
+# FORMAT OUTPUT
 # =========================
-def format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data):
+def format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data, asset_key):
+    asset  = ASSETS[asset_key]
     price  = market["price"]
     chg    = res["change"]
     arrow  = "📈" if chg >= 0 else "📉"
-    sig_e  = "🟢" if "CALL" in res["action"] else ("🔴" if "PUT" in res["action"] else "⚪")
+    ae     = "🟢" if "CALL" in res["action"] else ("🔴" if "PUT" in res["action"] else "⚪")
     trend  = "BULLISH" if res["sb"] > res["sb_bear"] else ("BEARISH" if res["sb_bear"] > res["sb"] else "NEUTRAL")
-    trend_e = "📈" if trend == "BULLISH" else ("📉" if trend == "BEARISH" else "➡️")
+    t_e    = "📈" if trend == "BULLISH" else ("📉" if trend == "BEARISH" else "➡️")
+    unit   = asset["unit"]
+    atm    = res["atm"]
 
-    vix_str  = f"{vix_data['vix']} ({vix_data['level'].split('—')[0].strip()})" if vix_data else "N/A"
-    rsi_str  = f"{rsi} — {rsi_sig.split('—')[0].strip()}" if rsi else "N/A"
-    pcr_str  = str(oc_data["pcr"]) if oc_data else "N/A"
-    atm_str  = str(oc_data["atm"]) if oc_data else "N/A"
+    vix_str = f"{vix_data['vix']} ({vix_data['level']})" if vix_data else "N/A"
+    rsi_str = f"{rsi} — {rsi_sig}" if rsi else "N/A"
+    pcr_str = str(oc_data["pcr"]) if oc_data and oc_data.get("pcr") else "N/A"
 
-    # Demand/Supply zone strings
-    sup_z = f"₹{zones['demand_zones'][0]} — ₹{zones['demand_zones'][1]}" if len(zones['demand_zones']) >= 2 else f"₹{zones['imm_sup']}"
-    res_z = f"₹{zones['supply_zones'][0]} — ₹{zones['supply_zones'][1]}" if len(zones['supply_zones']) >= 2 else f"₹{zones['imm_res']}"
+    sup_z = f"{unit}{zones['demand_zones'][0]} — {unit}{zones['demand_zones'][1]}" if len(zones['demand_zones']) >= 2 else f"{unit}{zones['imm_sup']}"
+    res_z = f"{unit}{zones['supply_zones'][0]} — {unit}{zones['supply_zones'][1]}" if len(zones['supply_zones']) >= 2 else f"{unit}{zones['imm_res']}"
 
-    # Entry/SL/T lines
     ce = res["atm_ce"]
     pe = res["atm_pe"]
 
-    if "CALL" in res["action"] and ce:
-        call_entry = f"Demand zone\n₹{zones['demand_zones'][0]} — ₹{zones['demand_zones'][1] if len(zones['demand_zones'])>1 else zones['imm_sup']}" if len(zones['demand_zones'])>=2 else f"₹{zones['imm_sup']}"
-        call_t1    = f"₹{zones['imm_res']}"
-        call_sl    = f"₹{res['sl_spot']} todi ki exit"
+    if "CALL" in res["action"]:
+        call_entry = f"Demand zone\n{unit}{zones['demand_zones'][0]} — {unit}{zones['demand_zones'][1]}" if len(zones['demand_zones'])>=2 else f"{unit}{zones['imm_sup']}"
+        call_t     = f"{unit}{zones['imm_res']}"
+        call_sl    = f"{unit}{res['sl_spot']} todi ki exit"
         put_entry  = "Supply zone\nN/A"
-        put_t1     = f"₹{atm_str} strike"
-        put_sl     = f"₹{zones['imm_res']} todi ki exit"
-    elif "PUT" in res["action"] and pe:
-        put_entry  = f"Supply zone\n₹{zones['supply_zones'][0]} — ₹{zones['supply_zones'][1] if len(zones['supply_zones'])>1 else zones['imm_res']}" if len(zones['supply_zones'])>=2 else f"₹{zones['imm_res']}"
-        put_t1     = f"₹{zones['imm_sup']}"
-        put_sl     = f"₹{zones['imm_res']} todi ki exit"
+        put_t      = f"{unit}{atm} strike"
+        put_sl     = f"{unit}{zones['imm_res']} todi ki exit"
+    elif "PUT" in res["action"]:
+        put_entry  = f"Supply zone\n{unit}{zones['supply_zones'][0]} — {unit}{zones['supply_zones'][1]}" if len(zones['supply_zones'])>=2 else f"{unit}{zones['imm_res']}"
+        put_t      = f"{unit}{zones['imm_sup']}"
+        put_sl     = f"{unit}{zones['imm_res']} todi ki exit"
         call_entry = "Demand zone\nN/A"
-        call_t1    = f"₹{atm_str} strike"
-        call_sl    = f"₹{zones['imm_sup']} todi ki exit"
+        call_t     = f"{unit}{atm} strike"
+        call_sl    = f"{unit}{zones['imm_sup']} todi ki exit"
     else:
-        call_entry = f"₹{zones['imm_sup']}"
-        call_t1    = f"₹{zones['imm_res']}"
-        call_sl    = f"₹{zones['s1']}"
-        put_entry  = f"₹{zones['imm_res']}"
-        put_t1     = f"₹{zones['imm_sup']}"
-        put_sl     = f"₹{zones['r1']}"
+        call_entry = f"{unit}{zones['imm_sup']}"
+        call_t     = f"{unit}{zones['imm_res']}"
+        call_sl    = f"{unit}{zones['s1']}"
+        put_entry  = f"{unit}{zones['imm_res']}"
+        put_t      = f"{unit}{zones['imm_sup']}"
+        put_sl     = f"{unit}{zones['r1']}"
 
     rr_str = res["rr"] if res["rr"] != "N/A" else "1:2"
 
-    msg = f"""📊 **Nifty50 — Options Analysis**
-**Nifty50:** ₹{price} {arrow} {chg:+.2f}%
-**Signal:** {trend_e} {trend} — {res['action']}
-**ATM Strike:** {atm_str}
+    prefix = "NIFTY" if asset_key == "nifty" else ("SENSEX" if asset_key == "sensex" else asset["name"].split()[0].upper())
 
-🟢 **Demand Zone** — 🔴 **Supply Zone** — ✅ **Risk:Reward**
+    msg = f"""📊 **{asset['name']} — Options Analysis**
+**{asset['name']}:** {unit}{price} {arrow} {chg:+.2f}%
+**Signal:** {t_e} {trend} — {res['action']}
+**ATM Strike:** {atm}
+
+🟢 **Demand Zone** — 🔴 **Supply Zone** — ✅ **R:R**
 {sup_z} — {res_z} — {rr_str}
 
-⭐ **India VIX**
-🟡 {vix_str}
-
+⭐ **India VIX:** {vix_str}
 📉 **RSI(14):** {rsi_str}
 **PCR:** {pcr_str} | **Pivot:** {zones['pivot']} | **Bull/Bear:** {res['sb']}/{res['sb_bear']}
 
 ━━━━━━━━━━━━━━━━
-📗 **CALL BUY ({atm_str} CE)**
+📗 **CALL BUY ({atm} CE)**
 ```
 Entry: {call_entry}
-Target: {call_t1}
+Target: {call_t}
 SL: {call_sl}
 ```
-📕 **PUT BUY ({atm_str} PE)**
+📕 **PUT BUY ({atm} PE)**
 ```
 Entry: {put_entry}
-Target: {put_t1}
+Target: {put_t}
 SL: {put_sl}
 ```
 ⚡ **Index Entry/Target/SL**
-Entry: ₹{zones['imm_sup']} | T1: ₹{zones['imm_res']} | T2: ₹{zones['r2']} | SL: ₹{zones['s1']}
+Entry: {unit}{zones['imm_sup']} | T1: {unit}{zones['imm_res']} | T2: {unit}{zones['r2']} | SL: {unit}{zones['s1']}
 
-{sig_e} **Final Signal: {res['action']}** | Confidence: {res['confidence']}%
+{ae} **Final Signal: {res['action']}** | Confidence: {res['confidence']}%
 *He financial advice nahi. •* {datetime.now().strftime("%d %b %H:%M")}"""
 
     return msg
 
 # =========================
+# EQUITY FORMAT
+# =========================
+def format_equity(stocks):
+    if not stocks:
+        return "❌ Top stocks data unavailable."
+
+    msg = f"📊 **Top Volume Stocks** | {datetime.now().strftime('%d %b %H:%M')}\n\n"
+    for s in stocks[:5]:
+        chg   = s.get("change", 0)
+        arrow = "📈" if chg >= 0 else "📉"
+        price = s["price"]
+        high  = s["high"]
+        low   = s["low"]
+        prev  = s["prev_close"]
+
+        pivot  = round((high + low + prev) / 3, 2) if high and low and prev else 0
+        r1     = round((2 * pivot) - low, 2) if pivot else 0
+        s1     = round((2 * pivot) - high, 2) if pivot else 0
+
+        trend  = "BULLISH" if price > pivot else "BEARISH"
+        t_e    = "📈" if trend == "BULLISH" else "📉"
+
+        msg += f"""**{s['symbol']}** {arrow} ₹{price} ({chg:+.2f}%)
+{t_e} {trend} | H:₹{high} L:₹{low}
+Entry: ₹{s1 if trend=='BULLISH' else r1} | T1: ₹{r1 if trend=='BULLISH' else s1} | SL: ₹{low if trend=='BULLISH' else high}
+━━━━━━━━━━━━━━━━
+"""
+    msg += "*He financial advice nahi.*"
+    return msg
+
+# =========================
 # AI ANALYSIS
 # =========================
-def _get_ai_analysis(market, oc_data, zones, rsi, vix_data, res):
+def _get_ai(market, oc_data, zones, rsi, vix_data, res, asset_key):
+    asset  = ASSETS[asset_key]
     oc_str = f"PCR:{oc_data['pcr']}, Call Wall:{oc_data['max_c_strike']}, Put Wall:{oc_data['max_p_strike']}" if oc_data else "N/A"
-    prompt = f"""Expert NIFTY50 intraday options trader. Give precise trade call.
+    ce     = res.get("atm_ce", {}) or {}
+    pe     = res.get("atm_pe", {}) or {}
+    ce_ltp = ce.get("ltp", 0)
+    pe_ltp = pe.get("ltp", 0)
+    if (not ce_ltp or not pe_ltp) and oc_data and oc_data.get("atm_data"):
+        ad     = oc_data["atm_data"]
+        ce_ltp = ce_ltp or ad.get("c_ltp", 0)
+        pe_ltp = pe_ltp or ad.get("p_ltp", 0)
+    ltp_info = f"CE LTP=₹{ce_ltp}, PE LTP=₹{pe_ltp}" if (ce_ltp or pe_ltp) else "LTP unavailable — use CMP"
 
-Price={market['price']} Change={res['change']}% VWAP={res['vwap']}
+    prompt = f"""Expert {asset['name']} intraday options trader. Give precise trade call.
+
+Asset: {asset['name']} | Price={market['price']} Change={res['change']}% VWAP={res['vwap']}
 O={market['open']} H={market['high']} L={market['low']}
 RSI={rsi or 'N/A'} | VIX={vix_data['vix'] if vix_data else 'N/A'}
 Bull:{res['sb']}/7 Bear:{res['sb_bear']}/7
-
+ATM={res['atm']} | {ltp_info}
 Resistance={zones['imm_res']} Support={zones['imm_sup']}
 Pivot={zones['pivot']} R1={zones['r1']} S1={zones['s1']}
-Strong Supply={zones['strong_supply']} Strong Demand={zones['strong_demand']}
 OI: {oc_str}
 System: {res['action']} ({res['confidence']}%)
 
-Rules: Min 65% confidence. NO TRADE if unclear.
-Reply in this EXACT compact format only, no extra text:
+IMPORTANT: Use actual LTP for entry price. If unavailable write "Use CMP".
+Min 65% confidence. NO TRADE if unclear.
 
-**Signal:** BULLISH/BEARISH — CALL BUY / PUT BUY / NO TRADE
-**Option:** NIFTY XXXXX CE/PE
+**Signal:** BULLISH/BEARISH — CALL BUY/PUT BUY/NO TRADE
+**Option:** {asset['name']} XXXXX CE/PE
 **Entry:** ₹XX | **SL:** ₹XX | **T1:** ₹XX | **T2:** ₹XX
 **Confidence:** XX%
-**Reason:** (1 line only)
-**Risk:** (1 line only)"""
+**Reason:** (1 line)
+**Risk:** (1 line)"""
+
     try:
         r = anthropic_client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=350,
+            model="claude-sonnet-4-5", max_tokens=300,
             messages=[{"role": "user", "content": prompt}]
         )
         return r.content[0].text
     except Exception as e:
         return f"AI Error: {str(e)}"
+
+# =========================
+# MAIN TRADE HANDLER
+# =========================
+async def handle_trade(message, asset_key):
+    asset = ASSETS[asset_key]
+
+    if asset_key == "equity":
+        await message.channel.send("⏳ Fetching top volume stocks...")
+        stocks = await run_in_thread(_get_top_stocks, timeout=15)
+        await message.channel.send(format_equity(stocks))
+        return
+
+    await message.channel.send(f"⏳ Fetching {asset['name']} data...")
+
+    # Fetch all data in parallel
+    oc_index = "NIFTY" if asset_key == "nifty" else ("BANKNIFTY" if asset_key == "banknifty" else None)
+
+    market, vix_data, rsi_result = await asyncio.gather(
+        get_market_data(asset_key),
+        run_in_thread(_get_vix, timeout=10),
+        run_in_thread(_get_rsi, asset.get("yahoo_symbol", "^NSEI"), asset.get("fyers_symbol", ""), timeout=15),
+    )
+
+    if not market:
+        await message.channel.send(f"❌ {asset['name']} data unavailable. Markets may be closed.")
+        return
+
+    oc_data = None
+    if asset_key in ["nifty", "sensex"] and oc_index:
+        oc_data = await run_in_thread(_get_oc_nse, oc_index, timeout=15)
+
+    rsi, rsi_sig, _ = rsi_result if rsi_result else (None, None, None)
+
+    src_info = f"✅ **{asset['name']}** | Source: {market.get('all_sources', market['source'])}"
+    if not oc_data and asset_key in ["nifty", "sensex"]:
+        src_info += " | ⚠️ OI unavailable"
+    await message.channel.send(src_info)
+
+    greeks_result = await run_in_thread(_get_greeks, market["price"], asset_key, oc_data, timeout=10)
+    greeks, atm, expiry_str = greeks_result if greeks_result else ({}, round(market["price"] / asset.get("strike_gap", 50)) * asset.get("strike_gap", 50), "")
+
+    zones = get_zones(market)
+    res   = master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data, asset_key)
+    out   = format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data, asset_key)
+
+    await message.channel.send(out)
+
+    await message.channel.send("🤖 AI analysis...")
+    ai = await run_in_thread(_get_ai, market, oc_data, zones, rsi, vix_data, res, asset_key, timeout=30)
+    if ai:
+        await message.channel.send(f"🤖 **AI Analysis** | {datetime.now().strftime('%H:%M')}\n\n{ai}\n\n*He financial advice nahi.*")
 
 # =========================
 # DISCORD EVENTS
@@ -673,58 +852,27 @@ async def on_message(message):
         if len(tok) < 20:
             await message.channel.send("Token too short!", delete_after=5)
             return
-        await message.channel.send("Updating token...")
-        try:
-            ok, msg = await run_in_thread(_update_railway_token, tok, timeout=30)
-            await message.channel.send(f"{'✅' if ok else '❌'} {msg}")
-        except:
-            await message.channel.send("❌ Update failed. Check Railway variables.")
+        await message.channel.send("⏳ Updating token...")
+        ok, msg = await run_in_thread(_update_token, tok, timeout=10)
+        await message.channel.send(msg)
         return
 
     cmd = message.content.lower().strip()
 
-    if cmd == "trade!":
-        status_msg = await message.channel.send("⏳ Fetching all data (parallel)...")
-
-        # Run ALL data fetches concurrently — no blocking!
-        market, oc_data, rsi_result, vix_data = await asyncio.gather(
-            get_market_data(),
-            run_in_thread(_get_option_chain, timeout=12),
-            run_in_thread(_get_rsi_data, timeout=15),
-            run_in_thread(_get_india_vix, timeout=10),
-        )
-
-        if not market:
-            await status_msg.edit(content="❌ No market data from Fyers/Yahoo/NSE. Markets may be closed.")
-            return
-
-        rsi, rsi_sig, rsi_src = rsi_result if rsi_result else (None, None, None)
-
-        src_info = f"✅ Data: **{market.get('all_sources', market['source'])}**"
-        if not oc_data: src_info += " | ⚠️ OI unavailable"
-        if not rsi:     src_info += " | ⚠️ RSI unavailable"
-        await status_msg.edit(content=src_info)
-
-        # Greeks also in thread
-        greeks_result = await run_in_thread(_get_greeks, market["price"], oc_data, timeout=10)
-        if greeks_result:
-            greeks, atm, expiry_str = greeks_result
-        else:
-            greeks, atm, expiry_str = {}, round(market["price"]/50)*50, ""
-
-        zones = get_zones(market, oc_data)
-        res   = master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data)
-        out   = format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data)
-
-        await message.channel.send(out)
-
-        await message.channel.send("🤖 AI analysis...")
-        ai = await run_in_thread(_get_ai_analysis, market, oc_data, zones, rsi, vix_data, res, timeout=30)
-        if ai:
-            await message.channel.send(f"🤖 **AI Analysis** | {datetime.now().strftime('%H:%M')}\n\n{ai}\n\n*He financial advice nahi.*")
+    # TRADE COMMANDS
+    if cmd == "trade!nifty":
+        await handle_trade(message, "nifty")
+    elif cmd == "trade!sensex":
+        await handle_trade(message, "sensex")
+    elif cmd == "trade!gold":
+        await handle_trade(message, "gold")
+    elif cmd == "trade!oil":
+        await handle_trade(message, "oil")
+    elif cmd == "trade!equity":
+        await handle_trade(message, "equity")
 
     elif cmd == "oi!":
-        oc = await run_in_thread(_get_option_chain, timeout=12)
+        oc = await run_in_thread(_get_oc_nse, "NIFTY", timeout=15)
         if not oc:
             await message.channel.send("❌ OI unavailable"); return
         rows = "```\nStrike  | CE OI     | PE OI     |C.IV|P.IV\n"
@@ -732,32 +880,27 @@ async def on_message(message):
             mk = "◄" if s["strike"] == oc["atm"] else " "
             rows += f"{s['strike']}{mk}| {s['c_oi']:>9,} | {s['p_oi']:>9,} |{s['c_iv']:>4}%|{s['p_iv']:>4}%\n"
         rows += "```"
-        await message.channel.send(f"📈 **OI** | {oc['expiry']} | Spot:`{oc['spot']}` ATM:`{oc['atm']}` PCR:`{oc['pcr']}`\nCall Wall:`{oc['max_c_strike']}` ({oc['max_c_oi']:,}) | Put Wall:`{oc['max_p_strike']}` ({oc['max_p_oi']:,})\n{rows}")
-
-    elif cmd == "rsi!":
-        result = await run_in_thread(_get_rsi_data, timeout=15)
-        if not result or not result[0]:
-            await message.channel.send("❌ RSI unavailable"); return
-        rsi, sig, src = result
-        bar = "█" * int(rsi/10) + "░" * (10 - int(rsi/10))
-        await message.channel.send(f"📉 **RSI(14):** `{rsi}` [{bar}] (src: {src})\n{sig}")
+        await message.channel.send(f"📈 **OI** | {oc['expiry']} | Spot:`{oc['spot']}` ATM:`{oc['atm']}` PCR:`{oc['pcr']}`\nCall Wall:`{oc['max_c_strike']}` | Put Wall:`{oc['max_p_strike']}`\n{rows}")
 
     elif cmd == "vix!":
-        v = await run_in_thread(_get_india_vix, timeout=10)
-        if not v:
-            await message.channel.send("❌ VIX unavailable"); return
+        v = await run_in_thread(_get_vix, timeout=10)
+        if not v: await message.channel.send("❌ VIX unavailable"); return
         await message.channel.send(f"⚡ **India VIX:** `{v['vix']}` ({v['chg']:+.2f}%)\n{v['level']}")
 
-    elif cmd == "zones!":
-        market = await get_market_data()
-        if not market:
-            await message.channel.send("❌ No market data"); return
-        oc = await run_in_thread(_get_option_chain, timeout=12)
-        z  = get_zones(market, oc)
-        await message.channel.send(f"🏗️ **ZONES** | Price:`{market['price']}`\nSupply: `{'` `'.join([str(x) for x in z['supply_zones']])}`\nDemand: `{'` `'.join([str(x) for x in z['demand_zones']])}`\nStrong Supply:`{z['strong_supply']}` Strong Demand:`{z['strong_demand']}`\nRes:`{z['imm_res']}` Sup:`{z['imm_sup']}` Pivot:`{z['pivot']}`\nR1:`{z['r1']}` R2:`{z['r2']}` S1:`{z['s1']}` S2:`{z['s2']}`")
-
     elif cmd == "help!":
-        await message.channel.send("📋 **COMMANDS**\n`trade!` — Full PRO analysis (Parallel fetch, no freeze)\n`oi!` — Option chain\n`rsi!` — RSI only\n`vix!` — India VIX\n`zones!` — Demand/Supply zones\n`help!` — This menu\n\n🔐 Token channel mein naya token paste karo directly")
+        await message.channel.send("""📋 **COMMANDS**
+
+`trade!nifty`  — Nifty50 Options Analysis
+`trade!sensex` — Sensex Options Analysis
+`trade!gold`   — MCX Gold Analysis
+`trade!oil`    — MCX Crude Oil Analysis
+`trade!equity` — Top Volume Stocks
+
+`oi!`   — Nifty Option Chain
+`vix!`  — India VIX
+`help!` — This menu
+
+🔐 Token channel mein naya token paste karo directly""")
 
 # =========================
 # MAIN
