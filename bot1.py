@@ -1054,11 +1054,93 @@ async def handle_trade(message, asset_key):
         await message.channel.send(f"🤖 **AI Analysis** | {datetime.now().strftime('%H:%M')}\n\n{ai}\n\n*He financial advice nahi.*")
 
 # =========================
+# AUTO SIGNAL CONFIG
+# =========================
+SIGNAL_CHANNEL_ID = 1484099393714917387
+SIGNAL_THRESHOLD  = 7
+last_auto_action  = None
+
+# =========================
+# AUTO SIGNAL LOOP (har 5 min)
+# =========================
+async def run_auto_signal():
+    global last_auto_action
+    await client.wait_until_ready()
+    signal_ch = client.get_channel(SIGNAL_CHANNEL_ID)
+    if not signal_ch:
+        print("Signal channel not found!")
+        return
+
+    while not client.is_closed():
+        try:
+            # Market hours check (IST 9:15 to 15:30 = UTC 3:45 to 10:00)
+            now     = datetime.utcnow()
+            in_mkt  = (
+                now.weekday() < 5 and
+                ((now.hour == 3 and now.minute >= 45) or
+                 (4 <= now.hour <= 9) or
+                 (now.hour == 10 and now.minute == 0))
+            )
+
+            if in_mkt:
+                asset = ASSETS["nifty"]
+                market, vix_data, rsi_result, ema_result = await asyncio.gather(
+                    get_market_data("nifty"),
+                    run_in_thread(_get_vix, timeout=10),
+                    run_in_thread(_get_rsi, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=15),
+                    run_in_thread(_get_ema_data, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=15),
+                )
+
+                if market:
+                    rsi, rsi_sig, _     = rsi_result if rsi_result else (None, None, None)
+                    ema_data, _, _      = ema_result if ema_result else (None, None, None)
+                    fib_data            = _calc_fibonacci(market["high"], market["low"], market["price"]) if market.get("high") and market.get("low") else None
+                    greeks_r            = await run_in_thread(_get_greeks, market["price"], "nifty", None, timeout=10)
+                    greeks, atm, expst  = greeks_r if greeks_r else ({}, round(market["price"]/50)*50, "")
+                    zones               = get_zones(market)
+                    res                 = master_engine(market, None, greeks, atm, expst, zones, rsi, vix_data, "nifty", ema_data, fib_data)
+
+                    action = res["action"]
+                    score  = max(res["sb"], res["sb_bear"])
+
+                    if score >= SIGNAL_THRESHOLD and action != "NO TRADE" and action != last_auto_action:
+                        last_auto_action = action
+                        ae      = "🟢" if "CALL" in action else "🔴"
+                        ema_str = f"EMA9:`{ema_data['ema9']}` EMA14:`{ema_data['ema14']}` — {ema_data['signal']}" if ema_data else "N/A"
+                        fib_str = fib_data['zone'] if fib_data else "N/A"
+
+                        auto_msg = f"""🚨 **NIFTY AUTO SIGNAL** | {datetime.now().strftime('%d %b %H:%M')}
+━━━━━━━━━━━━━━━━━━━━
+{ae} **{action}** | Confidence: `{res['confidence']}%` | Score: `{score}/9`
+
+💹 Price: `₹{market['price']}` | VWAP: `{res['vwap']}`
+📉 RSI: `{rsi}` | 📊 {ema_str}
+🔢 Fib: {fib_str}
+🏗️ Support: `{zones['imm_sup']}` | Resistance: `{zones['imm_res']}`
+⭐ VIX: `{vix_data['vix'] if vix_data else 'N/A'}`
+
+**Option:** `NIFTY {atm} {'CE' if 'CALL' in action else 'PE'}`
+**Entry:** Demand/Supply zone | **SL:** `{zones['s1'] if 'CALL' in action else zones['r1']}`
+**T1:** `{zones['imm_res'] if 'CALL' in action else zones['imm_sup']}` | **T2:** `{zones['r2'] if 'CALL' in action else zones['s2']}`
+
+_Type `trade!` here for full personal analysis in DM_
+⚠️ *He financial advice nahi.*"""
+
+                        await signal_ch.send(auto_msg)
+                        print(f"Auto signal sent: {action} at {datetime.now()}")
+
+        except Exception as e:
+            print(f"Auto signal error: {e}")
+
+        await asyncio.sleep(SIGNAL_INTERVAL * 60)
+
+# =========================
 # DISCORD EVENTS
 # =========================
 @client.event
 async def on_ready():
     print(f"Bot ready: {client.user}")
+    asyncio.ensure_future(run_auto_signal())
 
 @client.event
 async def on_message(message):
@@ -1084,7 +1166,28 @@ async def on_message(message):
 
     cmd = message.content.lower().strip()
 
-    # TRADE COMMANDS
+    # PREMIUM SIGNAL CHANNEL — trade! likhne pe DM mein bhejo
+    if message.channel.id == SIGNAL_CHANNEL_ID:
+        if cmd == "trade!":
+            try:
+                await message.delete()
+            except:
+                pass
+            try:
+                await message.author.send("⏳ Tumhara personal Nifty analysis aa raha hai...")
+                # Create a fake message object for DM
+                class DMMessage:
+                    def __init__(self, author, channel):
+                        self.author  = author
+                        self.channel = channel
+                        self.content = "trade!nifty"
+                dm_msg = DMMessage(message.author, message.author.dm_channel or await message.author.create_dm())
+                await handle_trade(dm_msg, "nifty")
+            except discord.Forbidden:
+                await message.channel.send(f"{message.author.mention} DM enable karo pehle!", delete_after=10)
+            except Exception as e:
+                print(f"DM error: {e}")
+        return
     if cmd == "trade!nifty":
         await handle_trade(message, "nifty")
     elif cmd == "trade!sensex":
