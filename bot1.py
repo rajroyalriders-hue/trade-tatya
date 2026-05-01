@@ -1059,6 +1059,7 @@ async def handle_trade(message, asset_key):
 SIGNAL_CHANNEL_ID = 1484099393714917387
 SIGNAL_THRESHOLD  = 7
 last_auto_action  = None
+dm_usage          = {}  # {user_id_date: count} — daily DM limit tracker
 
 # =========================
 # AUTO SIGNAL LOOP (har 5 min)
@@ -1166,25 +1167,53 @@ async def on_message(message):
 
     cmd = message.content.lower().strip()
 
-    # PREMIUM SIGNAL CHANNEL — trade! likhne pe DM mein bhejo
+    # PREMIUM SIGNAL CHANNEL — trade! likhne pe DM mein bhejo (5/day per user)
     if message.channel.id == SIGNAL_CHANNEL_ID:
         if cmd == "trade!":
             try:
                 await message.delete()
             except:
                 pass
+
+            user_id   = message.author.id
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            key       = f"{user_id}_{today_str}"
+
+            # Check daily limit
+            user_count = dm_usage.get(key, 0)
+            if user_count >= 5:
+                try:
+                    await message.author.send(
+                        f"⚠️ **Daily limit khatam!**\n"
+                        f"Aaj ke 5 free analyses use ho gaye.\n"
+                        f"Kal subah reset hoga! 🌅"
+                    )
+                except:
+                    pass
+                return
+
+            # Update count
+            dm_usage[key] = user_count + 1
+            remaining     = 5 - dm_usage[key]
+
             try:
-                await message.author.send("⏳ Tumhara personal Nifty analysis aa raha hai...")
-                # Create a fake message object for DM
+                await message.author.send(
+                    f"⏳ Tumhara personal Nifty analysis aa raha hai...\n"
+                    f"_(Aaj ke {remaining} analyses baaki hain)_"
+                )
                 class DMMessage:
                     def __init__(self, author, channel):
                         self.author  = author
                         self.channel = channel
                         self.content = "trade!nifty"
-                dm_msg = DMMessage(message.author, message.author.dm_channel or await message.author.create_dm())
+                dm_ch  = message.author.dm_channel or await message.author.create_dm()
+                dm_msg = DMMessage(message.author, dm_ch)
                 await handle_trade(dm_msg, "nifty")
             except discord.Forbidden:
-                await message.channel.send(f"{message.author.mention} DM enable karo pehle!", delete_after=10)
+                await message.channel.send(
+                    f"{message.author.mention} DM enable karo pehle!",
+                    delete_after=10
+                )
             except Exception as e:
                 print(f"DM error: {e}")
         return
