@@ -1186,7 +1186,7 @@ async def on_message(message):
                 try:
                     await message.author.send(
                         f"⚠️ **Daily limit khatam!**\n"
-                        f"Aaj ke 5 free analyses use ho gaye.\n"
+                        f"Aaj ke 5 analyses use ho gaye.\n"
                         f"Kal subah reset hoga! 🌅"
                     )
                 except:
