@@ -1058,6 +1058,7 @@ async def handle_trade(message, asset_key):
 # =========================
 SIGNAL_CHANNEL_ID = 1484099393714917387
 SIGNAL_THRESHOLD  = 7
+SIGNAL_INTERVAL   = 5
 last_auto_action  = None
 dm_usage          = {}  # {user_id_date: count} — daily DM limit tracker
 
@@ -1075,12 +1076,12 @@ async def run_auto_signal():
     while not client.is_closed():
         try:
             # Market hours check (IST 9:15 to 15:30 = UTC 3:45 to 10:00)
-            now     = datetime.utcnow()
+            now     = datetime.now()
             in_mkt  = (
                 now.weekday() < 5 and
-                ((now.hour == 3 and now.minute >= 45) or
-                 (4 <= now.hour <= 9) or
-                 (now.hour == 10 and now.minute == 0))
+                ((now.hour == 9 and now.minute >= 15) or
+                 (10 <= now.hour <= 14) or
+                 (now.hour == 15 and now.minute <= 30))
             )
 
             if in_mkt:
