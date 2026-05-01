@@ -46,21 +46,23 @@ ASSETS = {
     },
     "gold": {
         "name": "MCX Gold",
-        "fyers_symbol": "MCX:GOLD25MAYFUT",
-        "yahoo_symbol": "GC=F",
+        "fyers_symbol": None,
+        "yahoo_symbol": None,
         "type": "commodity",
         "lot_size": 100,
         "strike_gap": 100,
-        "unit": "₹/10g",
+        "unit": "₹",
+        "mcx_key": "gold",
     },
     "oil": {
         "name": "MCX Crude Oil",
-        "fyers_symbol": "MCX:CRUDEOIL25MAYFUT",
-        "yahoo_symbol": "CL=F",
+        "fyers_symbol": None,
+        "yahoo_symbol": None,
         "type": "commodity",
         "lot_size": 100,
-        "strike_gap": 50,
-        "unit": "₹/bbl",
+        "strike_gap": 100,
+        "unit": "₹",
+        "mcx_key": "oil",
     },
     "equity": {
         "name": "Top Volume Stocks",
@@ -107,6 +109,44 @@ async def run_in_thread(func, *args, timeout=15):
     except Exception as e:
         print(f"ERROR in {func.__name__}: {e}")
         return None
+
+
+# =========================
+# AUTO MCX SYMBOL
+# =========================
+def get_mcx_symbol(commodity):
+    """Auto generate current/next month MCX symbol"""
+    today = datetime.now()
+    # MCX expiry is around 5th of each month
+    # If past 4th, use next month
+    # Try current month first, fallback to next month
+    month_str = today.strftime("%b").upper()
+    year_str  = today.strftime("%y")
+    next_month = today.replace(day=1) + timedelta(days=32)
+    nm_str = next_month.strftime("%b").upper()
+    ny_str = next_month.strftime("%y")
+
+    if commodity == "gold":
+        # Gold expiry around 5th of month — use next-to-next month
+        # Gold trades 2 months ahead typically
+        two_months = today.replace(day=1) + timedelta(days=63)
+        tm_str = two_months.strftime("%b").upper()
+        ty_str = two_months.strftime("%y")
+        if today.day > 4:
+            sym = "MCX:GOLD" + ty_str + tm_str + "FUT"
+        else:
+            sym = "MCX:GOLD" + ny_str + nm_str + "FUT"
+    elif commodity == "oil":
+        # Crude oil expiry around 20th
+        if today.day > 18:
+            sym = "MCX:CRUDEOIL" + ny_str + nm_str + "FUT"
+        else:
+            sym = "MCX:CRUDEOIL" + year_str + month_str + "FUT"
+    else:
+        sym = "MCX:" + commodity.upper() + year_str + month_str + "FUT"
+
+    print("MCX Symbol: " + sym)
+    return sym
 
 # =========================
 # TOKEN UPDATE
@@ -223,9 +263,14 @@ async def get_market_data(asset_key):
     if asset_key == "equity":
         return await run_in_thread(_get_top_stocks, timeout=15)
 
+    # Auto symbol for MCX commodities
+    fyers_sym = asset.get("fyers_symbol")
+    if asset.get("mcx_key"):
+        fyers_sym = get_mcx_symbol(asset["mcx_key"])
+
     tasks = []
-    if asset.get("fyers_symbol"):
-        tasks.append(run_in_thread(_get_fyers_data, asset["fyers_symbol"], timeout=10))
+    if fyers_sym:
+        tasks.append(run_in_thread(_get_fyers_data, fyers_sym, timeout=10))
     if asset.get("yahoo_symbol"):
         tasks.append(run_in_thread(_get_yahoo_data, asset["yahoo_symbol"], timeout=12))
     if asset_key == "nifty":
@@ -347,6 +392,131 @@ def _get_rsi(yahoo_sym, fyers_sym):
     elif rsi >= 30: sig = "Bearish momentum"
     else:           sig = "Oversold — Buying opportunity"
     return rsi, sig, src
+
+# =========================
+# EMA CALCULATION
+# =========================
+def _calc_ema(prices, period):
+    if len(prices) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = price * k + ema * (1 - k)
+    return round(ema, 2)
+
+def _get_ema_data(yahoo_sym, fyers_sym):
+    prices = []
+    src    = ""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(yahoo_sym).history(period="5d", interval="5m")
+        if not hist.empty:
+            prices = list(hist["Close"])
+            src    = "Yahoo"
+    except:
+        pass
+    if not prices and fyers_sym:
+        try:
+            today = datetime.now()
+            resp  = fyers.history(data={
+                "symbol": fyers_sym, "resolution": "5", "date_format": "1",
+                "range_from": (today - timedelta(days=5)).strftime("%Y-%m-%d"),
+                "range_to":   today.strftime("%Y-%m-%d"), "cont_flag": "1"
+            })
+            if "candles" in resp:
+                prices = [c[4] for c in resp["candles"]]
+                src    = "Fyers"
+        except:
+            pass
+    if not prices:
+        return None, None, None
+
+    ema9  = _calc_ema(prices, 9)
+    ema14 = _calc_ema(prices, 14)
+
+    if not ema9 or not ema14:
+        return None, None, src
+
+    current = prices[-1]
+
+    if current > ema9 > ema14:
+        signal = "Strong Bullish 🟢 (Price > EMA9 > EMA14)"
+        score  = 2
+    elif current > ema9 and ema9 < ema14:
+        signal = "Bullish crossover 🟡 (EMA9 crossing up)"
+        score  = 1
+    elif current < ema9 < ema14:
+        signal = "Strong Bearish 🔴 (Price < EMA9 < EMA14)"
+        score  = -2
+    elif current < ema9 and ema9 > ema14:
+        signal = "Bearish crossover 🟠 (EMA9 crossing down)"
+        score  = -1
+    else:
+        signal = "Neutral ⚪"
+        score  = 0
+
+    return {"ema9": ema9, "ema14": ema14, "signal": signal, "score": score}, src, prices
+
+# =========================
+# FIBONACCI LEVELS
+# =========================
+def _calc_fibonacci(high, low, current_price):
+    diff = high - low
+    if diff == 0:
+        return None
+
+    levels = {
+        "0.0":   round(high, 2),
+        "23.6":  round(high - 0.236 * diff, 2),
+        "38.2":  round(high - 0.382 * diff, 2),
+        "50.0":  round(high - 0.500 * diff, 2),
+        "61.8":  round(high - 0.618 * diff, 2),
+        "78.6":  round(high - 0.786 * diff, 2),
+        "100.0": round(low, 2),
+    }
+
+    # Find nearest support and resistance from fib levels
+    above = {k: v for k, v in levels.items() if v > current_price}
+    below = {k: v for k, v in levels.items() if v < current_price}
+
+    nearest_res = min(above.values()) if above else None
+    nearest_sup = max(below.values()) if below else None
+
+    # Find which fib zone price is in
+    fib_zone = "N/A"
+    fib_score = 0
+    level_list = sorted(levels.values(), reverse=True)
+    for i in range(len(level_list) - 1):
+        if level_list[i+1] <= current_price <= level_list[i]:
+            # Find key names
+            for k, v in levels.items():
+                if v == level_list[i]:
+                    upper_key = k
+                if v == level_list[i+1]:
+                    lower_key = k
+
+            if lower_key in ["61.8", "78.6"]:
+                fib_zone  = f"Strong Support zone ({lower_key}%) 🟢"
+                fib_score = 2
+            elif lower_key in ["38.2", "50.0"]:
+                fib_zone  = f"Support zone ({lower_key}%) 🟡"
+                fib_score = 1
+            elif upper_key in ["23.6", "38.2"]:
+                fib_zone  = f"Resistance zone ({upper_key}%) 🔴"
+                fib_score = -1
+            else:
+                fib_zone  = f"Between {lower_key}% - {upper_key}%"
+                fib_score = 0
+            break
+
+    return {
+        "levels":      levels,
+        "nearest_res": nearest_res,
+        "nearest_sup": nearest_sup,
+        "zone":        fib_zone,
+        "score":       fib_score,
+    }
 
 # =========================
 # INDIA VIX
@@ -516,7 +686,7 @@ def get_zones(market):
 # =========================
 # MASTER ENGINE
 # =========================
-def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data, asset_key):
+def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data, asset_key, ema_data=None, fib_data=None):
     asset      = ASSETS[asset_key]
     price      = market["price"]
     vwap       = round((market["high"] + market["low"] + price) / 3, 2)
@@ -535,6 +705,28 @@ def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data
         elif rsi <= 30: signals["RSI"] = f"Oversold ({rsi})"; sb += 2
         elif rsi <= 40: signals["RSI"] = f"Bearish ({rsi})"; sb_bear += 1
         else:           signals["RSI"] = f"Neutral ({rsi})"
+
+    # EMA Signal
+    if ema_data:
+        ema_score = ema_data.get("score", 0)
+        signals["EMA"] = f"EMA9:{ema_data['ema9']} EMA14:{ema_data['ema14']} — {ema_data['signal']}"
+        if ema_score >= 2:   sb += 2
+        elif ema_score == 1: sb += 1
+        elif ema_score <= -2: sb_bear += 2
+        elif ema_score == -1: sb_bear += 1
+    else:
+        signals["EMA"] = "N/A"
+
+    # Fibonacci Signal
+    if fib_data:
+        fib_score = fib_data.get("score", 0)
+        signals["Fib"] = f"{fib_data['zone']} | Sup:{fib_data['nearest_sup']} Res:{fib_data['nearest_res']}"
+        if fib_score >= 2:   sb += 2
+        elif fib_score == 1: sb += 1
+        elif fib_score <= -2: sb_bear += 2
+        elif fib_score == -1: sb_bear += 1
+    else:
+        signals["Fib"] = "N/A"
 
     if oc_data:
         pcr = oc_data["pcr"]
@@ -576,7 +768,7 @@ def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data
         if ced > ped:   signals["Greeks"] = f"Bullish Δ ({ced:.2f})"; sb += 1
         elif ped > ced: signals["Greeks"] = f"Bearish Δ ({ped:.2f})"; sb_bear += 1
 
-    if sb >= 4:
+    if sb >= 5:
         action = "CALL BUY"
         entry  = atm_ce.get("ltp", 0) if atm_ce else 0
         sl_o   = round(entry * 0.75, 2)
@@ -584,7 +776,7 @@ def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data
         t2_o   = round(entry * 1.70, 2)
         conf   = min(int((sb / max(sb + sb_bear, 1)) * 100), 95)
         option = f"{asset['name'].split()[0] if asset_key not in ['nifty','sensex'] else ('NIFTY' if asset_key=='nifty' else 'SENSEX')} {atm} CE"
-    elif sb_bear >= 4:
+    elif sb_bear >= 5:
         action = "PUT BUY"
         entry  = atm_pe.get("ltp", 0) if atm_pe else 0
         sl_o   = round(entry * 0.75, 2)
@@ -613,6 +805,7 @@ def master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data
         "rr": rr, "sb": sb, "sb_bear": sb_bear,
         "signals": signals, "vwap": vwap, "change": change_pct,
         "atm_ce": atm_ce, "atm_pe": atm_pe, "atm": atm,
+        "ema_data": ema_data, "fib_data": fib_data,
     }
 
 # =========================
@@ -665,6 +858,21 @@ def format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data, asset_key
 
     prefix = "NIFTY" if asset_key == "nifty" else ("SENSEX" if asset_key == "sensex" else asset["name"].split()[0].upper())
 
+    # EMA display
+    ema_data = res.get("ema_data")
+    fib_data = res.get("fib_data")
+
+    ema_str = "N/A"
+    if ema_data:
+        ema_str = f"EMA9:`{ema_data['ema9']}` EMA14:`{ema_data['ema14']}` — {ema_data['signal']}"
+
+    fib_str = "N/A"
+    fib_levels_str = ""
+    if fib_data:
+        fib_str = fib_data['zone']
+        lvls = fib_data['levels']
+        fib_levels_str = f"\n📐 **Fibonacci:** 23.6%:`{lvls['23.6']}` 38.2%:`{lvls['38.2']}` 50%:`{lvls['50.0']}` 61.8%:`{lvls['61.8']}`"
+
     msg = f"""📊 **{asset['name']} — Options Analysis**
 **{asset['name']}:** {unit}{price} {arrow} {chg:+.2f}%
 **Signal:** {t_e} {trend} — {res['action']}
@@ -675,6 +883,8 @@ def format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data, asset_key
 
 ⭐ **India VIX:** {vix_str}
 📉 **RSI(14):** {rsi_str}
+📊 **EMA:** {ema_str}
+🔢 **Fib Zone:** {fib_str}{fib_levels_str}
 **PCR:** {pcr_str} | **Pivot:** {zones['pivot']} | **Bull/Bear:** {res['sb']}/{res['sb_bear']}
 
 ━━━━━━━━━━━━━━━━
@@ -733,30 +943,38 @@ Entry: ₹{s1 if trend=='BULLISH' else r1} | T1: ₹{r1 if trend=='BULLISH' else
 # AI ANALYSIS
 # =========================
 def _get_ai(market, oc_data, zones, rsi, vix_data, res, asset_key):
-    asset  = ASSETS[asset_key]
-    oc_str = f"PCR:{oc_data['pcr']}, Call Wall:{oc_data['max_c_strike']}, Put Wall:{oc_data['max_p_strike']}" if oc_data else "N/A"
-    ce     = res.get("atm_ce", {}) or {}
-    pe     = res.get("atm_pe", {}) or {}
-    ce_ltp = ce.get("ltp", 0)
-    pe_ltp = pe.get("ltp", 0)
+    asset    = ASSETS[asset_key]
+    oc_str   = f"PCR:{oc_data['pcr']}, Call Wall:{oc_data['max_c_strike']}, Put Wall:{oc_data['max_p_strike']}" if oc_data else "N/A"
+    ce       = res.get("atm_ce", {}) or {}
+    pe       = res.get("atm_pe", {}) or {}
+    ce_ltp   = ce.get("ltp", 0)
+    pe_ltp   = pe.get("ltp", 0)
     if (not ce_ltp or not pe_ltp) and oc_data and oc_data.get("atm_data"):
         ad     = oc_data["atm_data"]
         ce_ltp = ce_ltp or ad.get("c_ltp", 0)
         pe_ltp = pe_ltp or ad.get("p_ltp", 0)
     ltp_info = f"CE LTP=₹{ce_ltp}, PE LTP=₹{pe_ltp}" if (ce_ltp or pe_ltp) else "LTP unavailable — use CMP"
 
+    ema_data = res.get("ema_data")
+    fib_data = res.get("fib_data")
+    ema_str  = f"EMA9={ema_data['ema9']}, EMA14={ema_data['ema14']}, Signal={ema_data['signal']}" if ema_data else "N/A"
+    fib_str  = f"Zone={fib_data['zone']}, NearSup={fib_data['nearest_sup']}, NearRes={fib_data['nearest_res']}" if fib_data else "N/A"
+
     prompt = f"""Expert {asset['name']} intraday options trader. Give precise trade call.
 
 Asset: {asset['name']} | Price={market['price']} Change={res['change']}% VWAP={res['vwap']}
 O={market['open']} H={market['high']} L={market['low']}
 RSI={rsi or 'N/A'} | VIX={vix_data['vix'] if vix_data else 'N/A'}
-Bull:{res['sb']}/7 Bear:{res['sb_bear']}/7
+EMA: {ema_str}
+Fibonacci: {fib_str}
+Bull:{res['sb']}/9 Bear:{res['sb_bear']}/9
 ATM={res['atm']} | {ltp_info}
 Resistance={zones['imm_res']} Support={zones['imm_sup']}
 Pivot={zones['pivot']} R1={zones['r1']} S1={zones['s1']}
 OI: {oc_str}
 System: {res['action']} ({res['confidence']}%)
 
+Consider EMA crossover and Fibonacci zones in analysis.
 IMPORTANT: Use actual LTP for entry price. If unavailable write "Use CMP".
 Min 65% confidence. NO TRADE if unclear.
 
@@ -793,10 +1011,11 @@ async def handle_trade(message, asset_key):
     # Fetch all data in parallel
     oc_index = "NIFTY" if asset_key == "nifty" else ("BANKNIFTY" if asset_key == "banknifty" else None)
 
-    market, vix_data, rsi_result = await asyncio.gather(
+    market, vix_data, rsi_result, ema_result = await asyncio.gather(
         get_market_data(asset_key),
         run_in_thread(_get_vix, timeout=10),
         run_in_thread(_get_rsi, asset.get("yahoo_symbol", "^NSEI"), asset.get("fyers_symbol", ""), timeout=15),
+        run_in_thread(_get_ema_data, asset.get("yahoo_symbol", "^NSEI"), asset.get("fyers_symbol", ""), timeout=15),
     )
 
     if not market:
@@ -807,7 +1026,13 @@ async def handle_trade(message, asset_key):
     if asset_key in ["nifty", "sensex"] and oc_index:
         oc_data = await run_in_thread(_get_oc_nse, oc_index, timeout=15)
 
-    rsi, rsi_sig, _ = rsi_result if rsi_result else (None, None, None)
+    rsi, rsi_sig, _   = rsi_result if rsi_result else (None, None, None)
+    ema_data, _, prices = ema_result if ema_result else (None, None, None)
+
+    # Fibonacci from day high/low
+    fib_data = None
+    if market.get("high") and market.get("low"):
+        fib_data = _calc_fibonacci(market["high"], market["low"], market["price"])
 
     src_info = f"✅ **{asset['name']}** | Source: {market.get('all_sources', market['source'])}"
     if not oc_data and asset_key in ["nifty", "sensex"]:
@@ -818,7 +1043,7 @@ async def handle_trade(message, asset_key):
     greeks, atm, expiry_str = greeks_result if greeks_result else ({}, round(market["price"] / asset.get("strike_gap", 50)) * asset.get("strike_gap", 50), "")
 
     zones = get_zones(market)
-    res   = master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data, asset_key)
+    res   = master_engine(market, oc_data, greeks, atm, expiry_str, zones, rsi, vix_data, asset_key, ema_data, fib_data)
     out   = format_output(res, market, oc_data, zones, rsi, rsi_sig, vix_data, asset_key)
 
     await message.channel.send(out)
