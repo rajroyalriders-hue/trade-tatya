@@ -35,20 +35,36 @@ NEWS_SOURCES = [
         "url":  "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
     },
     {
-        "name": "Moneycontrol Markets",
-        "url":  "https://www.moneycontrol.com/rss/marketreports.xml",
+        "name": "Economic Times News",
+        "url":  "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
     },
     {
-        "name": "NSE India",
-        "url":  "https://www.nseindia.com/api/corporate-announcements?index=equities",
+        "name": "Moneycontrol Markets",
+        "url":  "https://www.moneycontrol.com/rss/marketreports.xml",
     },
     {
         "name": "Business Standard Markets",
         "url":  "https://www.business-standard.com/rss/markets-106.rss",
     },
     {
+        "name": "Business Standard Economy",
+        "url":  "https://www.business-standard.com/rss/economy-policy-101.rss",
+    },
+    {
         "name": "LiveMint Markets",
         "url":  "https://www.livemint.com/rss/markets",
+    },
+    {
+        "name": "Reuters Business",
+        "url":  "https://feeds.reuters.com/reuters/businessNews",
+    },
+    {
+        "name": "CNBC World Markets",
+        "url":  "https://www.cnbc.com/id/15839069/device/rss/rss.html",
+    },
+    {
+        "name": "Bloomberg Markets",
+        "url":  "https://feeds.bloomberg.com/markets/news.rss",
     },
 ]
 
@@ -120,24 +136,30 @@ def ai_filter_and_format(news_items):
     for i, n in enumerate(news_items[:20]):
         news_text += f"{i+1}. [{n['source']}] {n['title']}\n   {n['desc'][:150]}\n\n"
 
-    prompt = f"""You are an Indian stock market news filter. 
+    prompt = f"""You are an Indian stock market news filter and analyst.
 
-From the following news items, select ONLY those that are:
-1. Directly related to Indian stock market (NSE, BSE, Nifty, Sensex)
-2. About Indian companies (earnings, results, mergers, acquisitions)
-3. RBI/SEBI policy decisions affecting markets
-4. Global events that SIGNIFICANTLY impact Indian markets (Fed rate, crude oil major moves)
-5. IPOs, FII/DII data, bulk deals
+From the following news items, select those that could impact Indian markets including:
+1. Indian stock market news (NSE, BSE, Nifty, Sensex movements)
+2. Indian company news (earnings, results, mergers, acquisitions, management changes)
+3. RBI/SEBI/Government policy decisions
+4. US Fed, ECB rate decisions and statements
+5. Trump tweets/statements about trade, tariffs, India, China, oil
+6. Crude oil, gold, dollar index major moves
+7. US-China trade war updates
+8. Global recession fears or growth data
+9. FII/DII flows, IPOs, bulk deals
+10. Any geopolitical event affecting global markets
 
-EXCLUDE:
-- General world news with minimal market impact
-- Sports, entertainment, politics (unless directly market related)
-- Duplicate or very similar news
+Be INCLUSIVE — even small news that could cause 0.5% move in Nifty is relevant.
 
-For each selected news, provide:
-- Relevance score (1-10)
+EXCLUDE only:
+- Pure sports, entertainment with zero market relevance
+- Highly local political news with no market impact
+
+For each selected news:
+- Relevance score (1-10) — be generous, score 4+ for anything with even small market impact
 - Market impact: BULLISH / BEARISH / NEUTRAL
-- One line summary in simple Hindi/English
+- One line summary mentioning WHY it affects Indian market
 
 News items:
 {news_text}
@@ -268,7 +290,7 @@ async def news_loop():
                 score     = ai_info.get("score", 0)
 
                 # Only post if relevance >= 6
-                if score < 6:
+                if score < 4:
                     continue
 
                 msg = format_news_message(news_item, ai_info)
@@ -328,7 +350,7 @@ async def on_message(message):
                 if idx < 0 or idx >= len(new_items):
                     continue
                 news_item = new_items[idx]
-                if ai_info.get("score", 0) < 6:
+                if ai_info.get("score", 0) < 4:
                     continue
                 msg = format_news_message(news_item, ai_info)
                 await message.channel.send(msg)
