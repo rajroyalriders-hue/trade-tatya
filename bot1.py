@@ -1182,15 +1182,21 @@ def _get_stock_data_15m(symbol_ns):
             return None
         price  = round(float(info.last_price), 2)
         prev   = round(float(info.previous_close), 2)
+        # Use today's candles only for high/low
+        today  = hist[hist.index.date == hist.index[-1].date()]
+        high   = round(float(today["High"].max()), 2) if not today.empty else round(float(hist["High"].iloc[-1]), 2)
+        low    = round(float(today["Low"].min()), 2)  if not today.empty else round(float(hist["Low"].iloc[-1]), 2)
         closes = list(hist["Close"])
+        change = round(((price - prev) / prev) * 100, 2) if prev else 0
+        # Sanity check — skip if change is too extreme (bad data)
+        if abs(change) > 30:
+            return None
         return {
             "symbol":    symbol_ns.replace(".NS",""),
             "price":     price, "prev": prev,
-            "high":      round(float(hist["High"].max()), 2),
-            "low":       round(float(hist["Low"].min()), 2),
-            "open":      round(float(hist["Open"].iloc[-1]), 2),
+            "high":      high, "low": low,
             "closes_15m": closes,
-            "change":    round(((price - prev) / prev) * 100, 2) if prev else 0,
+            "change":    change,
         }
     except Exception as e:
         print(f"Stock 15m error {symbol_ns}: {e}")
@@ -1209,12 +1215,12 @@ def _get_stock_data_week(symbol_ns):
         lows   = list(hist["Low"])
         price  = round(closes[-1], 2)
         return {
-            "symbol":   sym.replace(".NS",""),
-            "price":    price,
-            "prev":     round(closes[-2], 2),
-            "high":     round(max(highs[-4:]), 2),
-            "low":      round(min(lows[-4:]), 2),
-            "closes_w": closes,
+            "symbol":    sym.replace(".NS",""),
+            "price":     price,
+            "prev":      round(closes[-2], 2),
+            "high":      round(max(highs[-4:]), 2),
+            "low":       round(min(lows[-4:]), 2),
+            "closes_w":  closes,
             "change_3m": round(((price - closes[-12]) / closes[-12]) * 100, 2) if len(closes) >= 12 else 0,
         }
     except Exception as e:
@@ -1237,6 +1243,8 @@ def _analyze_stock(data):
     pivot = round((high + low + prev) / 3, 2)
     r1    = round((2 * pivot) - low, 2)
     s1    = round((2 * pivot) - high, 2)
+
+    # Score
     score = 0
     if ema9 and ema14:
         if price > ema9 > ema14:   score += 2
@@ -1248,19 +1256,71 @@ def _analyze_stock(data):
         elif rsi <= 45: score -= 1
     if price > pivot: score += 1
     else:             score -= 1
+
     trend = "BULLISH 📈" if score >= 2 else ("BEARISH 📉" if score <= -2 else "NEUTRAL ➡️")
-    if score >= 2:
-        entry = s1; target = r1; sl = round(low * 0.995, 2)
-    elif score <= -2:
-        entry = r1; target = s1; sl = round(high * 1.005, 2)
-    else:
-        entry = price; target = r1; sl = s1
+
+    # Fix: Entry/Target/SL with proper logic
+    if score >= 2:  # Bullish
+        entry  = round(price, 2)
+        target = round(price * 1.03, 2)  # 3% target
+        sl     = round(price * 0.98, 2)  # 2% SL
+        # Override with support/resistance if reasonable
+        if s1 > 0 and s1 < price:
+            sl = round(s1, 2)
+        if r1 > price:
+            target = round(r1, 2)
+    elif score <= -2:  # Bearish
+        entry  = round(price, 2)
+        target = round(price * 0.97, 2)
+        sl     = round(price * 1.02, 2)
+        if r1 > price:
+            sl = round(r1, 2)
+        if s1 > 0 and s1 < price:
+            target = round(s1, 2)
+    else:  # Neutral
+        entry  = round(price, 2)
+        target = round(price * 1.02, 2)
+        sl     = round(price * 0.99, 2)
+
     return {
         "rsi": rsi, "ema9": ema9, "ema14": ema14,
         "pivot": pivot, "r1": r1, "s1": s1,
         "trend": trend, "score": score,
-        "entry": round(entry,2), "target": round(target,2), "sl": round(sl,2),
+        "entry": entry, "target": target, "sl": sl,
     }
+
+def _ai_stock_analysis(sym, price, change, rsi, ema9, ema14, pivot, r1, s1, trend, timeframe="15m"):
+    """AI se proper entry/target/sl lo"""
+    try:
+        prompt = f"""You are an expert Indian stock market trader.
+
+Stock: {sym} | Price: ₹{price} | Change: {change:+.2f}%
+Timeframe: {timeframe}
+RSI: {rsi} | EMA9: {ema9} | EMA14: {ema14}
+Pivot: {pivot} | R1: {r1} | S1: {s1}
+System Signal: {trend}
+
+Give PRECISE trade levels. Rules:
+- Entry must be near current price (within 2%)
+- Target must be ABOVE entry for BUY, BELOW for SELL
+- SL must be BELOW entry for BUY, ABOVE for SELL
+- R:R must be minimum 1:1.5
+
+Respond EXACTLY (no extra text):
+🎯 **{sym}** | {trend}
+💰 **Entry:** ₹XX
+🎯 **Target:** ₹XX (+X%)
+🛑 **SL:** ₹XX (-X%)
+📊 **R:R:** 1:X
+💡 **Reason:** (1 line)"""
+
+        r = anthropic_client.messages.create(
+            model="claude-sonnet-4-5", max_tokens=150,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return r.content[0].text.strip()
+    except Exception as e:
+        return None
 
 def _get_high_volume_stocks():
     try:
@@ -1290,12 +1350,12 @@ def _get_long_term_stocks():
     except:
         return ["RELIANCE","TCS","HDFCBANK","BHARTIARTL","ICICIBANK"]
 
-def _stock_block(sym, data, ana, timeframe="15m"):
+def _stock_block(sym, data, ana):
     if not data or not ana:
         return f"\n**{sym}** — Data unavailable\n─────────────────\n"
     change = data.get("change") or data.get("change_3m", 0)
     arrow  = "📈" if change >= 0 else "📉"
-    label  = f"({change:+.2f}%)" if timeframe=="15m" else f"3M: {change:+.2f}%"
+    label  = f"({change:+.2f}%)"
     return f"""
 **{sym}** {arrow} ₹{data['price']} {label}
 📊 RSI: `{ana['rsi']}` | EMA9: `{ana['ema9']}` | EMA14: `{ana['ema14']}`
@@ -1306,40 +1366,79 @@ def _stock_block(sym, data, ana, timeframe="15m"):
 
 async def handle_equity_dm(user):
     dm_ch = user.dm_channel or await user.create_dm()
-
     await dm_ch.send(f"📊 **EQUITY ANALYSIS** | {datetime.now().strftime('%d %b %H:%M')}\n━━━━━━━━━━━━━━━━━━━━\nFetching all 3 sections... ⏳")
 
     # Section 1 — High Volume 15m
-    await dm_ch.send("⏳ Section 1: High Volume stocks...")
+    await dm_ch.send("⏳ Section 1: High volume stocks fetching...")
     vol_syms = await run_in_thread(_get_high_volume_stocks, timeout=15)
-    sec1 = "━━━━━━━━━━━━━━━━━━━━\n🔥 **SECTION 1 — TODAY'S HIGH VOLUME** *(15m)*\n━━━━━━━━━━━━━━━━━━━━"
+    sec1_header = "━━━━━━━━━━━━━━━━━━━━\n🔥 **SECTION 1 — TODAY'S HIGH VOLUME** *(15m Timeframe)*\n━━━━━━━━━━━━━━━━━━━━"
+    await dm_ch.send(sec1_header)
+
     for sym in (vol_syms or []):
         data = await run_in_thread(_get_stock_data_15m, sym, timeout=12)
         ana  = _analyze_stock(data) if data else None
-        sec1 += _stock_block(sym, data, ana, "15m")
-    await dm_ch.send(sec1)
+        if not data or not ana:
+            await dm_ch.send(f"**{sym}** — Data unavailable")
+            continue
+        # Get AI analysis
+        ai_block = await run_in_thread(
+            _ai_stock_analysis, sym, data["price"], data["change"],
+            ana["rsi"], ana["ema9"], ana["ema14"],
+            ana["pivot"], ana["r1"], ana["s1"], ana["trend"], "15m",
+            timeout=20
+        )
+        if ai_block:
+            await dm_ch.send(f"```\n{ai_block}\n```")
+        else:
+            await dm_ch.send(_stock_block(sym, data, ana))
 
     # Section 2 — Long Term Weekly
-    await dm_ch.send("⏳ Section 2: Long term picks...")
+    await dm_ch.send("⏳ Section 2: Long term picks fetching...")
     lt_syms = await run_in_thread(_get_long_term_stocks, timeout=20)
-    sec2 = "━━━━━━━━━━━━━━━━━━━━\n📈 **SECTION 2 — LONG TERM HOLDS** *(Weekly | 3M Performance)*\n━━━━━━━━━━━━━━━━━━━━"
+    sec2_header = "━━━━━━━━━━━━━━━━━━━━\n📈 **SECTION 2 — LONG TERM HOLDS** *(Weekly | 3M Performance)*\n━━━━━━━━━━━━━━━━━━━━"
+    await dm_ch.send(sec2_header)
+
     for sym in (lt_syms or []):
         data = await run_in_thread(_get_stock_data_week, sym, timeout=12)
         ana  = _analyze_stock(data) if data else None
-        sec2 += _stock_block(sym, data, ana, "week")
-    await dm_ch.send(sec2)
+        if not data or not ana:
+            await dm_ch.send(f"**{sym}** — Data unavailable")
+            continue
+        change = data.get("change_3m", 0)
+        data["change"] = change
+        ai_block = await run_in_thread(
+            _ai_stock_analysis, sym, data["price"], change,
+            ana["rsi"], ana["ema9"], ana["ema14"],
+            ana["pivot"], ana["r1"], ana["s1"], ana["trend"], "Weekly",
+            timeout=20
+        )
+        if ai_block:
+            await dm_ch.send(f"```\n{ai_block}\n```")
+        else:
+            await dm_ch.send(_stock_block(sym, data, ana))
 
     # Section 3 — My Companies
+    sec3_header = "━━━━━━━━━━━━━━━━━━━━\n⭐ **SECTION 3 — YOUR SELECTED COMPANIES**\n━━━━━━━━━━━━━━━━━━━━"
+    await dm_ch.send(sec3_header)
     if MY_COMPANIES:
-        await dm_ch.send("⏳ Section 3: Your selected companies...")
-        sec3 = "━━━━━━━━━━━━━━━━━━━━\n⭐ **SECTION 3 — YOUR SELECTED COMPANIES**\n━━━━━━━━━━━━━━━━━━━━"
         for sym in MY_COMPANIES:
             data = await run_in_thread(_get_stock_data_15m, sym, timeout=12)
             ana  = _analyze_stock(data) if data else None
-            sec3 += _stock_block(sym, data, ana, "15m")
-        await dm_ch.send(sec3)
+            if not data or not ana:
+                await dm_ch.send(f"**{sym}** — Data unavailable")
+                continue
+            ai_block = await run_in_thread(
+                _ai_stock_analysis, sym, data["price"], data["change"],
+                ana["rsi"], ana["ema9"], ana["ema14"],
+                ana["pivot"], ana["r1"], ana["s1"], ana["trend"], "15m",
+                timeout=20
+            )
+            if ai_block:
+                await dm_ch.send(f"```\n{ai_block}\n```")
+            else:
+                await dm_ch.send(_stock_block(sym, data, ana))
     else:
-        await dm_ch.send("━━━━━━━━━━━━━━━━━━━━\n⭐ **SECTION 3 — YOUR SELECTED COMPANIES**\n━━━━━━━━━━━━━━━━━━━━\n_Coming soon! Admin will add companies._")
+        await dm_ch.send("_Coming soon! Admin will add companies._")
 
     await dm_ch.send("*📢 Sirf educational purpose ke liye | SEBI registered nahi hain | Apne vivek se trade karein*")
 
