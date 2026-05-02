@@ -1290,7 +1290,7 @@ def _analyze_stock(data):
     }
 
 def _ai_stock_analysis(sym, price, change, rsi, ema9, ema14, pivot, r1, s1, trend, timeframe="15m"):
-    """AI se proper entry/target/sl lo"""
+    """AI se proper entry/target/sl lo with clear BUY/SELL label"""
     try:
         prompt = f"""You are an expert Indian stock market trader.
 
@@ -1300,19 +1300,19 @@ RSI: {rsi} | EMA9: {ema9} | EMA14: {ema14}
 Pivot: {pivot} | R1: {r1} | S1: {s1}
 System Signal: {trend}
 
-Give PRECISE trade levels. Rules:
-- Entry must be near current price (within 2%)
-- Target must be ABOVE entry for BUY, BELOW for SELL
-- SL must be BELOW entry for BUY, ABOVE for SELL
-- R:R must be minimum 1:1.5
+Decide BUY or SELL based on indicators. Rules (STRICTLY follow):
+- If BUY: Entry near current price, Target ABOVE entry (+2% min), SL BELOW entry (-1.5% max)
+- If SELL: Entry near current price, Target BELOW entry (-2% min), SL ABOVE entry (+1.5% max)
+- R:R minimum 1:1.5
+- Clearly mention BUY or SELL
 
-Respond EXACTLY (no extra text):
-🎯 **{sym}** | {trend}
+Respond EXACTLY in this format (no extra text):
+📌 **{sym}** | ✅ BUY  or  📌 **{sym}** | 🔴 SELL
 💰 **Entry:** ₹XX
-🎯 **Target:** ₹XX (+X%)
-🛑 **SL:** ₹XX (-X%)
+🎯 **Target:** ₹XX (+X% or -X%)
+🛑 **SL:** ₹XX (-X% or +X%)
 📊 **R:R:** 1:X
-💡 **Reason:** (1 line)"""
+💡 **Reason:** (1 line max)"""
 
         r = anthropic_client.messages.create(
             model="claude-sonnet-4-5", max_tokens=150,
