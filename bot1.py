@@ -1154,13 +1154,196 @@ async def handle_trade(message, asset_key):
         await message.channel.send(f"🤖 **AI Analysis** | {datetime.now().strftime('%H:%M')}\n\n{ai}\n\n*📢 Sirf educational purpose ke liye | SEBI registered nahi hain | Apne vivek se trade karein*")
 
 # =========================
-# AUTO SIGNAL CONFIG
+# EQUITY CHANNEL CONFIG
 # =========================
+EQUITY_CHANNEL_ID = 1484099418541129738
+
+# Section 3 — Your selected companies (add later)
+MY_COMPANIES = []  # e.g. ["RELIANCE", "TCS", "HDFCBANK"]
+
+
 SIGNAL_CHANNEL_ID = 1484099393714917387
 SIGNAL_THRESHOLD  = 7
 SIGNAL_INTERVAL   = 5
 last_auto_action  = None
 dm_usage          = {}  # {user_id_date: count} — daily DM limit tracker
+
+# =========================
+# EQUITY ANALYSIS FUNCTIONS
+# =========================
+def _get_stock_data_15m(symbol_ns):
+    try:
+        import yfinance as yf
+        sym  = symbol_ns if ".NS" in symbol_ns else symbol_ns + ".NS"
+        t    = yf.Ticker(sym)
+        hist = t.history(period="5d", interval="15m")
+        info = t.fast_info
+        if hist.empty:
+            return None
+        price  = round(float(info.last_price), 2)
+        prev   = round(float(info.previous_close), 2)
+        closes = list(hist["Close"])
+        return {
+            "symbol":    symbol_ns.replace(".NS",""),
+            "price":     price, "prev": prev,
+            "high":      round(float(hist["High"].max()), 2),
+            "low":       round(float(hist["Low"].min()), 2),
+            "open":      round(float(hist["Open"].iloc[-1]), 2),
+            "closes_15m": closes,
+            "change":    round(((price - prev) / prev) * 100, 2) if prev else 0,
+        }
+    except Exception as e:
+        print(f"Stock 15m error {symbol_ns}: {e}")
+        return None
+
+def _get_stock_data_week(symbol_ns):
+    try:
+        import yfinance as yf
+        sym  = symbol_ns if ".NS" in symbol_ns else symbol_ns + ".NS"
+        t    = yf.Ticker(sym)
+        hist = t.history(period="6mo", interval="1wk")
+        if hist.empty or len(hist) < 5:
+            return None
+        closes = list(hist["Close"])
+        highs  = list(hist["High"])
+        lows   = list(hist["Low"])
+        price  = round(closes[-1], 2)
+        return {
+            "symbol":   sym.replace(".NS",""),
+            "price":    price,
+            "prev":     round(closes[-2], 2),
+            "high":     round(max(highs[-4:]), 2),
+            "low":      round(min(lows[-4:]), 2),
+            "closes_w": closes,
+            "change_3m": round(((price - closes[-12]) / closes[-12]) * 100, 2) if len(closes) >= 12 else 0,
+        }
+    except Exception as e:
+        print(f"Stock weekly error {symbol_ns}: {e}")
+        return None
+
+def _analyze_stock(data):
+    if not data:
+        return None
+    closes = data.get("closes_15m") or data.get("closes_w", [])
+    if not closes or len(closes) < 15:
+        return None
+    rsi   = _calc_rsi(closes)
+    ema9  = _calc_ema(closes, 9)
+    ema14 = _calc_ema(closes, 14)
+    price = data["price"]
+    high  = data["high"]
+    low   = data["low"]
+    prev  = data["prev"]
+    pivot = round((high + low + prev) / 3, 2)
+    r1    = round((2 * pivot) - low, 2)
+    s1    = round((2 * pivot) - high, 2)
+    score = 0
+    if ema9 and ema14:
+        if price > ema9 > ema14:   score += 2
+        elif price < ema9 < ema14: score -= 2
+    if rsi:
+        if rsi <= 35:   score += 2
+        elif rsi >= 65: score -= 2
+        elif rsi >= 55: score += 1
+        elif rsi <= 45: score -= 1
+    if price > pivot: score += 1
+    else:             score -= 1
+    trend = "BULLISH 📈" if score >= 2 else ("BEARISH 📉" if score <= -2 else "NEUTRAL ➡️")
+    if score >= 2:
+        entry = s1; target = r1; sl = round(low * 0.995, 2)
+    elif score <= -2:
+        entry = r1; target = s1; sl = round(high * 1.005, 2)
+    else:
+        entry = price; target = r1; sl = s1
+    return {
+        "rsi": rsi, "ema9": ema9, "ema14": ema14,
+        "pivot": pivot, "r1": r1, "s1": s1,
+        "trend": trend, "score": score,
+        "entry": round(entry,2), "target": round(target,2), "sl": round(sl,2),
+    }
+
+def _get_high_volume_stocks():
+    try:
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com"}
+        s = requests.Session()
+        s.get("https://www.nseindia.com", headers=headers, timeout=6)
+        r = s.get("https://www.nseindia.com/api/live-analysis-volume-gainers", headers=headers, timeout=10)
+        data = r.json().get("data", [])[:8]
+        return [item.get("symbol","") for item in data if item.get("symbol")][:5]
+    except:
+        return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK"]
+
+def _get_long_term_stocks():
+    nifty50 = ["RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK","HINDUNILVR","ITC","SBIN","BHARTIARTL","KOTAKBANK","LT","AXISBANK","ASIANPAINT","MARUTI","SUNPHARMA"]
+    try:
+        import yfinance as yf
+        performers = []
+        for sym in nifty50:
+            try:
+                hist = yf.Ticker(sym+".NS").history(period="3mo", interval="1wk")
+                if hist.empty or len(hist) < 4: continue
+                closes = list(hist["Close"])
+                performers.append((sym, round(((closes[-1]-closes[0])/closes[0])*100, 2)))
+            except: continue
+        performers.sort(key=lambda x: x[1], reverse=True)
+        return [p[0] for p in performers[:5]]
+    except:
+        return ["RELIANCE","TCS","HDFCBANK","BHARTIARTL","ICICIBANK"]
+
+def _stock_block(sym, data, ana, timeframe="15m"):
+    if not data or not ana:
+        return f"\n**{sym}** — Data unavailable\n─────────────────\n"
+    change = data.get("change") or data.get("change_3m", 0)
+    arrow  = "📈" if change >= 0 else "📉"
+    label  = f"({change:+.2f}%)" if timeframe=="15m" else f"3M: {change:+.2f}%"
+    return f"""
+**{sym}** {arrow} ₹{data['price']} {label}
+📊 RSI: `{ana['rsi']}` | EMA9: `{ana['ema9']}` | EMA14: `{ana['ema14']}`
+🏗️ Pivot: `{ana['pivot']}` | R1: `{ana['r1']}` | S1: `{ana['s1']}`
+{ana['trend']}
+💰 **Entry:** `₹{ana['entry']}` | 🎯 **Target:** `₹{ana['target']}` | 🛑 **SL:** `₹{ana['sl']}`
+─────────────────"""
+
+async def handle_equity_dm(user):
+    dm_ch = user.dm_channel or await user.create_dm()
+
+    await dm_ch.send(f"📊 **EQUITY ANALYSIS** | {datetime.now().strftime('%d %b %H:%M')}\n━━━━━━━━━━━━━━━━━━━━\nFetching all 3 sections... ⏳")
+
+    # Section 1 — High Volume 15m
+    await dm_ch.send("⏳ Section 1: High Volume stocks...")
+    vol_syms = await run_in_thread(_get_high_volume_stocks, timeout=15)
+    sec1 = "━━━━━━━━━━━━━━━━━━━━\n🔥 **SECTION 1 — TODAY'S HIGH VOLUME** *(15m)*\n━━━━━━━━━━━━━━━━━━━━"
+    for sym in (vol_syms or []):
+        data = await run_in_thread(_get_stock_data_15m, sym, timeout=12)
+        ana  = _analyze_stock(data) if data else None
+        sec1 += _stock_block(sym, data, ana, "15m")
+    await dm_ch.send(sec1)
+
+    # Section 2 — Long Term Weekly
+    await dm_ch.send("⏳ Section 2: Long term picks...")
+    lt_syms = await run_in_thread(_get_long_term_stocks, timeout=20)
+    sec2 = "━━━━━━━━━━━━━━━━━━━━\n📈 **SECTION 2 — LONG TERM HOLDS** *(Weekly | 3M Performance)*\n━━━━━━━━━━━━━━━━━━━━"
+    for sym in (lt_syms or []):
+        data = await run_in_thread(_get_stock_data_week, sym, timeout=12)
+        ana  = _analyze_stock(data) if data else None
+        sec2 += _stock_block(sym, data, ana, "week")
+    await dm_ch.send(sec2)
+
+    # Section 3 — My Companies
+    if MY_COMPANIES:
+        await dm_ch.send("⏳ Section 3: Your selected companies...")
+        sec3 = "━━━━━━━━━━━━━━━━━━━━\n⭐ **SECTION 3 — YOUR SELECTED COMPANIES**\n━━━━━━━━━━━━━━━━━━━━"
+        for sym in MY_COMPANIES:
+            data = await run_in_thread(_get_stock_data_15m, sym, timeout=12)
+            ana  = _analyze_stock(data) if data else None
+            sec3 += _stock_block(sym, data, ana, "15m")
+        await dm_ch.send(sec3)
+    else:
+        await dm_ch.send("━━━━━━━━━━━━━━━━━━━━\n⭐ **SECTION 3 — YOUR SELECTED COMPANIES**\n━━━━━━━━━━━━━━━━━━━━\n_Coming soon! Admin will add companies._")
+
+    await dm_ch.send("*📢 Sirf educational purpose ke liye | SEBI registered nahi hain | Apne vivek se trade karein*")
+
+
 
 # =========================
 # AUTO SIGNAL LOOP (har 5 min)
@@ -1267,6 +1450,34 @@ async def on_message(message):
         return
 
     cmd = message.content.lower().strip()
+
+    # EQUITY CHANNEL — trade! likhne pe DM mein equity analysis
+    if message.channel.id == EQUITY_CHANNEL_ID:
+        if cmd == "trade!":
+            try:
+                await message.delete()
+            except:
+                pass
+            user_id   = message.author.id
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            key       = f"eq_{user_id}_{today_str}"
+            user_count = dm_usage.get(key, 0)
+            if user_count >= 5:
+                try:
+                    await message.author.send("⚠️ **Daily limit khatam!**\nAaj ke 5 equity analyses use ho gaye.\nKal subah reset hoga! 🌅")
+                except:
+                    pass
+                return
+            dm_usage[key] = user_count + 1
+            remaining = 5 - dm_usage[key]
+            try:
+                await message.author.send(f"⏳ Equity analysis aa raha hai...\n_(Aaj ke {remaining} analyses baaki hain)_")
+                await handle_equity_dm(message.author)
+            except discord.Forbidden:
+                await message.channel.send(f"{message.author.mention} DM enable karo pehle!", delete_after=10)
+            except Exception as e:
+                print(f"Equity DM error: {e}")
+        return
 
     # PREMIUM SIGNAL CHANNEL — trade! likhne pe DM mein bhejo (5/day per user)
     if message.channel.id == SIGNAL_CHANNEL_ID:
