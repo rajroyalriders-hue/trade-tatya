@@ -1529,7 +1529,7 @@ import string
 
 PREMIUM_ROLE_NAME = "Premium Member"
 CODE_VALIDITY_DAYS = 3
-PWA_LINK = "https://yourapp.com"  # Placeholder - update later
+PWA_LINK = "https://tradeforprosperity.online"  # Your domain
 CODES_FILE = "/root/bot/premium_codes.json"
 
 def load_codes():
