@@ -4,7 +4,7 @@ import threading
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from flask import Flask
+from flask import Flask, jsonify
 import anthropic
 from fyers_apiv3 import fyersModel
 import os
@@ -1669,6 +1669,15 @@ async def on_message(message):
 `help!` — This menu
 
 🔐 Token channel mein naya token paste karo directly""")
+
+# --- MOBILE APP API START ---
+latest_trade_plan = {"status": "No signal yet"} # Default message
+
+@app.route('/get_signals', methods=['GET'])
+def send_signals_to_app():
+    # Ye function APK ko data bhejega
+    return jsonify(latest_trade_plan)
+# --- MOBILE APP API END ---
 
 # =========================
 # MAIN
