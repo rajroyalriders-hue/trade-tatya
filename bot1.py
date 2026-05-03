@@ -4,7 +4,7 @@ import threading
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from flask import Flask, jsonify
+from flask import Flask
 import anthropic
 from fyers_apiv3 import fyersModel
 import os
@@ -76,6 +76,8 @@ ASSETS = {
 # =========================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members         = True
+intents.guilds          = True
 client           = discord.Client(intents=intents)
 anthropic_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 fyers            = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=FYERS_ACCESS_TOKEN)
@@ -1519,12 +1521,172 @@ _Type `trade!` here for full personal analysis in DM_
         await asyncio.sleep(SIGNAL_INTERVAL * 60)
 
 # =========================
+# PREMIUM CODE SYSTEM
+# =========================
+import json
+import random
+import string
+
+PREMIUM_ROLE_NAME = "Premium Member"
+CODE_VALIDITY_DAYS = 3
+PWA_LINK = "https://yourapp.com"  # Placeholder - update later
+CODES_FILE = "/root/bot/premium_codes.json"
+
+def load_codes():
+    try:
+        with open(CODES_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_codes(codes):
+    try:
+        with open(CODES_FILE, "w") as f:
+            json.dump(codes, f, indent=2)
+    except Exception as e:
+        print(f"Code save error: {e}")
+
+def generate_code():
+    chars = string.ascii_uppercase + string.digits
+    part1 = "".join(random.choices(chars, k=3))
+    part2 = "".join(random.choices(chars, k=5))
+    return f"{part1}-{part2}"
+
+async def send_premium_code(member):
+    """Generate code, save it, DM user"""
+    codes      = load_codes()
+    code       = generate_code()
+    expires_at = (datetime.now() + timedelta(days=CODE_VALIDITY_DAYS)).isoformat()
+
+    # Save with user info
+    codes[code] = {
+        "user_id":    member.id,
+        "username":   str(member),
+        "guild_id":   member.guild.id,
+        "created":    datetime.now().isoformat(),
+        "expires":    expires_at,
+        "active":     True,
+    }
+    save_codes(codes)
+
+    expiry_str = (datetime.now() + timedelta(days=CODE_VALIDITY_DAYS)).strftime("%d %b %Y, %I:%M %p")
+
+    msg = f"""🎉 **Welcome to Premium, {member.name}!** 🎉
+━━━━━━━━━━━━━━━━━━━━
+
+✨ **Your Premium Access Code:**
+```
+{code}
+```
+
+🔗 **Login Link:**
+{PWA_LINK}
+
+⏰ **Valid Till:** {expiry_str}
+📅 **Duration:** {CODE_VALIDITY_DAYS} days
+
+━━━━━━━━━━━━━━━━━━━━
+**Kaise use karein:**
+1. Upar diye link pe click karo
+2. Code copy karke paste karo
+3. Login ho jaoge — analysis aur signals access kar sakte ho!
+
+⚠️ **Note:**
+- Yeh code sirf {CODE_VALIDITY_DAYS} din valid hai
+- Expire hone ke baad role auto remove ho jayega
+- Naya code chahiye toh admin se request karo
+
+🙏 Enjoy karo aur trade safe! 💪
+*📢 Sirf educational purpose ke liye | SEBI registered nahi hain*"""
+
+    try:
+        await member.send(msg)
+        print(f"Premium code sent to {member.name}: {code}")
+        return True
+    except discord.Forbidden:
+        print(f"Cannot DM {member.name} - DMs disabled")
+        return False
+    except Exception as e:
+        print(f"Premium DM error: {e}")
+        return False
+
+async def check_expired_codes():
+    """Background task — har 1 hour check karo expired codes"""
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            codes = load_codes()
+            now   = datetime.now()
+            removed_users = []
+
+            for code, info in list(codes.items()):
+                if not info.get("active", True):
+                    continue
+                try:
+                    expires = datetime.fromisoformat(info["expires"])
+                    if now >= expires:
+                        # Code expired — remove role
+                        guild = client.get_guild(info["guild_id"])
+                        if guild:
+                            member = guild.get_member(info["user_id"])
+                            if member:
+                                role = discord.utils.get(guild.roles, name=PREMIUM_ROLE_NAME)
+                                if role and role in member.roles:
+                                    await member.remove_roles(role)
+                                    removed_users.append(member.name)
+                                    # Notify user
+                                    try:
+                                        await member.send(
+                                            f"⏰ **Your Premium access has expired!**\n\n"
+                                            f"Code `{code}` is no longer valid.\n"
+                                            f"Premium role removed automatically.\n\n"
+                                            f"📩 Naya access chahiye toh admin se request karo!"
+                                        )
+                                    except:
+                                        pass
+                        info["active"] = False
+                except Exception as inner_e:
+                    print(f"Inner expiry error for {code}: {inner_e}")
+
+            if removed_users:
+                print(f"Expired & removed: {removed_users}")
+                save_codes(codes)
+
+        except Exception as e:
+            print(f"Expiry check error: {e}")
+
+        await asyncio.sleep(3600)  # Check every 1 hour
+
+@client.event
+async def on_member_update(before, after):
+    """Detect when Premium Member role is added"""
+    try:
+        before_roles = set([r.name for r in before.roles])
+        after_roles  = set([r.name for r in after.roles])
+        added_roles  = after_roles - before_roles
+
+        if PREMIUM_ROLE_NAME in added_roles:
+            print(f"Premium role added to: {after.name}")
+            # Generate new code (deactivate old codes for this user)
+            codes = load_codes()
+            for code, info in codes.items():
+                if info["user_id"] == after.id and info.get("active", True):
+                    info["active"] = False
+            save_codes(codes)
+            # Send new code
+            await send_premium_code(after)
+    except Exception as e:
+        print(f"on_member_update error: {e}")
+
+
+# =========================
 # DISCORD EVENTS
 # =========================
 @client.event
 async def on_ready():
     print(f"Bot ready: {client.user}")
     asyncio.ensure_future(run_auto_signal())
+    asyncio.ensure_future(check_expired_codes())
 
 @client.event
 async def on_message(message):
@@ -1669,15 +1831,6 @@ async def on_message(message):
 `help!` — This menu
 
 🔐 Token channel mein naya token paste karo directly""")
-
-# --- MOBILE APP API START ---
-latest_trade_plan = {"status": "No signal yet"} # Default message
-
-@app.route('/get_signals', methods=['GET'])
-def send_signals_to_app():
-    # Ye function APK ko data bhejega
-    return jsonify(latest_trade_plan)
-# --- MOBILE APP API END ---
 
 # =========================
 # MAIN
