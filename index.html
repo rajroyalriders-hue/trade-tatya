@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0a0e1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Trade Prosperity">
+    
+    <title>Trade FOR Prosperity - Premium Trading Signals</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==">
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a2235;
+            --bg-hover: #232d42;
+            
+            --entry: #fbbf24;
+            --target: #10b981;
+            --sl: #ef4444;
+            
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-dim: #6b7280;
+            
+            --accent: #3b82f6;
+            --border: #2d3748;
+            
+            --glow-entry: rgba(251, 191, 36, 0.3);
+            --glow-target: rgba(16, 185, 129, 0.3);
+            --glow-sl: rgba(239, 68, 68, 0.3);
+        }
+        
+        body {
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        
+        .container {
+            max-width: 100%;
+            min-height: 100vh;
+            padding: 0;
+        }
+        
+        /* Login Screen */
+        .login-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 24px;
+            background: linear-gradient(135deg, #0a0e1a 0%, #1a1f35 100%);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .login-screen::before {
+            content: '';
+            position: absolute;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 70%);
+            top: -200px;
+            right: -200px;
+            animation: pulse 4s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.5; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+        }
+        
+        .logo {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 48px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--entry) 0%, var(--target) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -2px;
+        }
+        
+        .tagline {
+            color: var(--text-secondary);
+            margin-bottom: 48px;
+            font-size: 14px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        
+        .login-box {
+            background: var(--bg-card);
+            padding: 32px;
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 400px;
+            z-index: 1;
+        }
+        
+        .login-title {
+            font-size: 24px;
+            margin-bottom: 24px;
+            font-weight: 700;
+        }
+        
+        .input-group {
+            margin-bottom: 24px;
+        }
+        
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .input-group input {
+            width: 100%;
+            padding: 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            transition: all 0.3s;
+        }
+        
+        .input-group input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, var(--accent) 0%, #2563eb 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            font-family: 'Space Grotesk', sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .error-msg {
+            color: var(--sl);
+            font-size: 14px;
+            margin-top: 16px;
+            padding: 12px;
+            background: rgba(239, 68, 68, 0.1);
+            border-radius: 8px;
+            border-left: 4px solid var(--sl);
+        }
+        
+        /* App Screen */
+        .app-screen {
+            display: none;
+            min-height: 100vh;
+            background: var(--bg-primary);
+        }
+        
+        .app-screen.active {
+            display: block;
+        }
+        
+        /* Header */
+        .header {
+            background: var(--bg-card);
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+        
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        
+        .brand {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 20px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--entry) 0%, var(--target) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .logout-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        
+        .logout-btn:hover {
+            border-color: var(--sl);
+            color: var(--sl);
+        }
+        
+        .user-info {
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+        
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 8px;
+            padding: 16px 24px 0;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        .tab {
+            padding: 12px 20px;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 8px 8px 0 0;
+            transition: all 0.2s;
+            white-space: nowrap;
+            font-family: 'Space Grotesk', sans-serif;
+            position: relative;
+        }
+        
+        .tab.active {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+        
+        .tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--entry), var(--target));
+        }
+        
+        /* Content */
+        .content {
+            padding: 24px;
+        }
+        
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 20px;
+            margin-bottom: 16px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .symbol {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 20px;
+            font-weight: 700;
+        }
+        
+        .signal-badge {
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .signal-badge.bullish {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--target);
+        }
+        
+        .signal-badge.bearish {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--sl);
+        }
+        
+        .price-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .price {
+            font-size: 32px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .change {
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .change.positive {
+            color: var(--target);
+        }
+        
+        .change.negative {
+            color: var(--sl);
+        }
+        
+        .trade-levels {
+            display: grid;
+            gap: 12px;
+            margin-top: 16px;
+        }
+        
+        .level {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 4px solid;
+        }
+        
+        .level.entry {
+            border-color: var(--entry);
+            box-shadow: 0 0 20px var(--glow-entry);
+        }
+        
+        .level.target {
+            border-color: var(--target);
+            box-shadow: 0 0 20px var(--glow-target);
+        }
+        
+        .level.sl {
+            border-color: var(--sl);
+            box-shadow: 0 0 20px var(--glow-sl);
+        }
+        
+        .level-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+        
+        .level-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        
+        .level.entry .level-value {
+            color: var(--entry);
+        }
+        
+        .level.target .level-value {
+            color: var(--target);
+        }
+        
+        .level.sl .level-value {
+            color: var(--sl);
+        }
+        
+        .action-btn {
+            width: 100%;
+            padding: 18px;
+            background: linear-gradient(135deg, var(--accent) 0%, #2563eb 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 20px;
+            font-family: 'Space Grotesk', sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s;
+        }
+        
+        .action-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(59, 130, 246, 0.4);
+        }
+        
+        .action-btn:disabled {
+            background: var(--bg-secondary);
+            color: var(--text-dim);
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .usage-info {
+            text-align: center;
+            margin-top: 12px;
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+        
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-secondary);
+        }
+        
+        .empty-state svg {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+        
+        .disclaimer {
+            margin-top: 32px;
+            padding: 16px;
+            background: rgba(239, 68, 68, 0.1);
+            border-radius: 8px;
+            border-left: 4px solid var(--sl);
+            font-size: 12px;
+            color: var(--text-dim);
+            line-height: 1.5;
+        }
+        
+        /* Responsive */
+        @media (max-width: 640px) {
+            .logo {
+                font-size: 36px;
+            }
+            
+            .login-box {
+                padding: 24px;
+            }
+            
+            .price {
+                font-size: 28px;
+            }
+        }
+        
+        /* Install prompt */
+        .install-prompt {
+            position: fixed;
+            bottom: 24px;
+            left: 24px;
+            right: 24px;
+            background: var(--bg-card);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            display: none;
+            z-index: 1000;
+        }
+        
+        .install-prompt.show {
+            display: block;
+            animation: slideUp 0.3s;
+        }
+        
+        @keyframes slideUp {
+            from { transform: translateY(100px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .install-prompt p {
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+        
+        .install-buttons {
+            display: flex;
+            gap: 12px;
+        }
+        
+        .install-buttons button {
+            flex: 1;
+            padding: 12px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: 'Space Grotesk', sans-serif;
+            transition: all 0.2s;
+        }
+        
+        .install-yes {
+            background: var(--accent);
+            color: white;
+        }
+        
+        .install-no {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Screen -->
+    <div class="login-screen" id="loginScreen">
+        <div class="logo">₹</div>
+        <div class="tagline">Trade Prosperity</div>
+        
+        <div class="login-box">
+            <h2 class="login-title">Premium Access</h2>
+            <form id="loginForm">
+                <div class="input-group">
+                    <label for="codeInput">Access Code</label>
+                    <input 
+                        type="text" 
+                        id="codeInput" 
+                        placeholder="XXX-XXXXX"
+                        autocomplete="off"
+                        required
+                    >
+                </div>
+                <button type="submit" class="btn" id="loginBtn">Login</button>
+            </form>
+            <div id="loginError" class="error-msg" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- App Screen -->
+    <div class="app-screen" id="appScreen">
+        <div class="header">
+            <div class="header-top">
+                <div class="brand">Trade Prosperity</div>
+                <button class="logout-btn" id="logoutBtn">Logout</button>
+            </div>
+            <div class="user-info" id="userInfo">Welcome back!</div>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" data-tab="auto">🚨 Auto Signals</button>
+            <button class="tab" data-tab="nifty">📊 Nifty</button>
+            <button class="tab" data-tab="equity">💼 Equity</button>
+        </div>
+        
+        <div class="content">
+            <!-- Auto Signals Tab -->
+            <div class="tab-content active" id="autoTab">
+                <div id="autoSignalsContent"></div>
+            </div>
+            
+            <!-- Manual Nifty Tab -->
+            <div class="tab-content" id="niftyTab">
+                <button class="action-btn" id="getNiftyBtn">Get Nifty Analysis</button>
+                <div class="usage-info" id="niftyUsage"></div>
+                <div id="niftyContent"></div>
+            </div>
+            
+            <!-- Equity Tab -->
+            <div class="tab-content" id="equityTab">
+                <button class="action-btn" id="getEquityBtn">Get Equity Analysis</button>
+                <div class="usage-info" id="equityUsage"></div>
+                <div id="equityContent"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Install Prompt -->
+    <div class="install-prompt" id="installPrompt">
+        <p>📱 Install Trade Prosperity on your home screen for quick access!</p>
+        <div class="install-buttons">
+            <button class="install-yes" id="installYes">Install</button>
+            <button class="install-no" id="installNo">Later</button>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://82.25.110.9:8000';
+        let currentCode = localStorage.getItem('trade_code') || '';
+        let deferredPrompt = null;
+        
+        // Elements
+        const loginScreen = document.getElementById('loginScreen');
+        const appScreen = document.getElementById('appScreen');
+        const loginForm = document.getElementById('loginForm');
+        const codeInput = document.getElementById('codeInput');
+        const loginBtn = document.getElementById('loginBtn');
+        const loginError = document.getElementById('loginError');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const userInfo = document.getElementById('userInfo');
+        
+        // Tabs
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        
+        // Buttons
+        const getNiftyBtn = document.getElementById('getNiftyBtn');
+        const getEquityBtn = document.getElementById('getEquityBtn');
+        
+        // Content areas
+        const autoSignalsContent = document.getElementById('autoSignalsContent');
+        const niftyContent = document.getElementById('niftyContent');
+        const equityContent = document.getElementById('equityContent');
+        const niftyUsage = document.getElementById('niftyUsage');
+        const equityUsage = document.getElementById('equityUsage');
+        
+        // Install prompt
+        const installPrompt = document.getElementById('installPrompt');
+        const installYes = document.getElementById('installYes');
+        const installNo = document.getElementById('installNo');
+        
+        // Check if already logged in
+        if (currentCode) {
+            verifyAndLogin(currentCode);
+        }
+        
+        // Login form submit
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const code = codeInput.value.trim().toUpperCase();
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Logging in...';
+            loginError.style.display = 'none';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    currentCode = code;
+                    localStorage.setItem('trade_code', code);
+                    showApp(data);
+                } else {
+                    loginError.textContent = data.detail || 'Invalid code';
+                    loginError.style.display = 'block';
+                }
+            } catch (error) {
+                loginError.textContent = 'Connection error. Please try again.';
+                loginError.style.display = 'block';
+            }
+            
+            loginBtn.disabled = false;
+            loginBtn.textContent = 'Login';
+        });
+        
+        async function verifyAndLogin(code) {
+            try {
+                const response = await fetch(`${API_BASE}/api/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    showApp(data);
+                } else {
+                    logout();
+                }
+            } catch (error) {
+                logout();
+            }
+        }
+        
+        function showApp(userData) {
+            loginScreen.style.display = 'none';
+            appScreen.classList.add('active');
+            userInfo.textContent = `Welcome, ${userData.username}!`;
+            
+            loadAutoSignals();
+            loadUsage();
+            showInstallPrompt();
+        }
+        
+        function logout() {
+            currentCode = '';
+            localStorage.removeItem('trade_code');
+            loginScreen.style.display = 'flex';
+            appScreen.classList.remove('active');
+            codeInput.value = '';
+        }
+        
+        logoutBtn.addEventListener('click', logout);
+        
+        // Tab switching
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                tabs.forEach(t => t.classList.remove('active'));
+                tabContents.forEach(tc => tc.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById(`${tabName}Tab`).classList.add('active');
+            });
+        });
+        
+        // Load auto signals
+        async function loadAutoSignals() {
+            autoSignalsContent.innerHTML = '<div class="loading"><div class="spinner"></div>Loading signals...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/auto-signals?code=${currentCode}`);
+                const data = await response.json();
+                
+                if (data.signals && data.signals.length > 0) {
+                    autoSignalsContent.innerHTML = data.signals.map(signal => renderSignalCard(signal)).join('');
+                } else {
+                    autoSignalsContent.innerHTML = `
+                        <div class="empty-state">
+                            <div style="font-size: 48px;">📊</div>
+                            <p>No signals yet</p>
+                            <p style="font-size: 12px; margin-top: 8px;">Auto signals will appear here when conditions match (7/9 score)</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                autoSignalsContent.innerHTML = '<div class="loading">Failed to load signals</div>';
+            }
+        }
+        
+        // Get Nifty trade
+        getNiftyBtn.addEventListener('click', async () => {
+            getNiftyBtn.disabled = true;
+            getNiftyBtn.textContent = 'Analyzing...';
+            niftyContent.innerHTML = '<div class="loading"><div class="spinner"></div>Fetching analysis...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/trade/nifty`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: currentCode, section: 'nifty' })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    niftyContent.innerHTML = renderSignalCard(result.data, true);
+                    loadUsage();
+                } else {
+                    niftyContent.innerHTML = `<div class="error-msg">${result.detail}</div>`;
+                }
+            } catch (error) {
+                niftyContent.innerHTML = '<div class="error-msg">Failed to fetch analysis</div>';
+            }
+            
+            getNiftyBtn.disabled = false;
+            getNiftyBtn.textContent = 'Get Nifty Analysis';
+        });
+        
+        // Get Equity trade
+        getEquityBtn.addEventListener('click', async () => {
+            getEquityBtn.disabled = true;
+            getEquityBtn.textContent = 'Analyzing...';
+            equityContent.innerHTML = '<div class="loading"><div class="spinner"></div>Fetching equity data...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/trade/equity`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: currentCode, section: 'equity' })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    equityContent.innerHTML = renderEquityData(result.sections);
+                    loadUsage();
+                } else {
+                    equityContent.innerHTML = `<div class="error-msg">${result.detail}</div>`;
+                }
+            } catch (error) {
+                equityContent.innerHTML = '<div class="error-msg">Failed to fetch equity data</div>';
+            }
+            
+            getEquityBtn.disabled = false;
+            getEquityBtn.textContent = 'Get Equity Analysis';
+        });
+        
+        // Load usage stats
+        async function loadUsage() {
+            try {
+                const response = await fetch(`${API_BASE}/api/usage?code=${currentCode}`);
+                const data = await response.json();
+                
+                niftyUsage.textContent = `${data.nifty.remaining} / ${data.nifty.limit} requests remaining today`;
+                equityUsage.textContent = `${data.equity.remaining} / ${data.equity.limit} requests remaining today`;
+                
+                getNiftyBtn.disabled = data.nifty.remaining <= 0;
+                getEquityBtn.disabled = data.equity.remaining <= 0;
+            } catch (error) {
+                console.error('Failed to load usage:', error);
+            }
+        }
+        
+        // Render signal card
+        function renderSignalCard(signal, showExtras = false) {
+            const isBullish = signal.signal && signal.signal.includes('BULL');
+            const changeClass = signal.change >= 0 ? 'positive' : 'negative';
+            const changeSign = signal.change >= 0 ? '+' : '';
+            
+            return `
+                <div class="card">
+                    <div class="card-header">
+                        <div class="symbol">${signal.symbol}</div>
+                        <div class="signal-badge ${isBullish ? 'bullish' : 'bearish'}">${signal.signal || signal.action}</div>
+                    </div>
+                    
+                    <div class="price-row">
+                        <div class="price">₹${signal.price.toFixed(2)}</div>
+                        <div class="change ${changeClass}">${changeSign}${signal.change.toFixed(2)}%</div>
+                    </div>
+                    
+                    ${showExtras ? `
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 16px; font-size: 13px;">
+                            <div>
+                                <div style="color: var(--text-dim); margin-bottom: 4px;">RSI</div>
+                                <div style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${signal.rsi}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim); margin-bottom: 4px;">EMA 9/14</div>
+                                <div style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${signal.ema9} / ${signal.ema14}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim); margin-bottom: 4px;">Candle</div>
+                                <div style="font-size: 12px;">${signal.candle_pattern}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim); margin-bottom: 4px;">Fib Zone</div>
+                                <div style="font-size: 12px;">${signal.fib_zone}</div>
+                            </div>
+                        </div>
+                    ` : ''}
+                    
+                    <div class="trade-levels">
+                        <div class="level entry">
+                            <span class="level-label">💰 Entry</span>
+                            <span class="level-value">₹${signal.entry.toFixed(2)}</span>
+                        </div>
+                        <div class="level target">
+                            <span class="level-label">🎯 Target</span>
+                            <span class="level-value">₹${signal.target.toFixed(2)}</span>
+                        </div>
+                        <div class="level sl">
+                            <span class="level-label">🛑 Stop Loss</span>
+                            <span class="level-value">₹${signal.sl.toFixed(2)}</span>
+                        </div>
+                    </div>
+                    
+                    ${signal.confidence ? `
+                        <div style="margin-top: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-align: center;">
+                            <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 4px;">Confidence</div>
+                            <div style="font-size: 24px; font-weight: 700; color: var(--accent);">${signal.confidence}%</div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+        
+        // Render equity data
+        function renderEquityData(sections) {
+            let html = '';
+            
+            if (sections.high_volume && sections.high_volume.length > 0) {
+                html += '<h3 style="margin-bottom: 16px; font-size: 18px;">🔥 High Volume Stocks</h3>';
+                html += sections.high_volume.map(stock => renderStockCard(stock)).join('');
+            }
+            
+            if (sections.long_term && sections.long_term.length > 0) {
+                html += '<h3 style="margin: 32px 0 16px; font-size: 18px;">📈 Long Term Holds</h3>';
+                html += sections.long_term.map(stock => renderStockCard(stock)).join('');
+            }
+            
+            html += `<div class="disclaimer">📢 Sirf educational purpose ke liye | SEBI registered nahi hain | Apne vivek se trade karein</div>`;
+            
+            return html;
+        }
+        
+        function renderStockCard(stock) {
+            const changeLabel = stock.change_3m !== undefined ? `3M: ${stock.change_3m.toFixed(2)}%` : `${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}%`;
+            const changeClass = (stock.change_3m !== undefined ? stock.change_3m : stock.change) >= 0 ? 'positive' : 'negative';
+            
+            return `
+                <div class="card">
+                    <div class="card-header">
+                        <div class="symbol">${stock.symbol}</div>
+                        <div class="signal-badge ${stock.signal === 'BUY' ? 'bullish' : 'bearish'}">${stock.signal}</div>
+                    </div>
+                    
+                    <div class="price-row">
+                        <div class="price">₹${stock.price.toFixed(2)}</div>
+                        <div class="change ${changeClass}">${changeLabel}</div>
+                    </div>
+                    
+                    <div class="trade-levels">
+                        <div class="level entry">
+                            <span class="level-label">💰 Entry</span>
+                            <span class="level-value">₹${stock.entry.toFixed(2)}</span>
+                        </div>
+                        <div class="level target">
+                            <span class="level-label">🎯 Target</span>
+                            <span class="level-value">₹${stock.target.toFixed(2)}</span>
+                        </div>
+                        <div class="level sl">
+                            <span class="level-label">🛑 SL</span>
+                            <span class="level-value">₹${stock.sl.toFixed(2)}</span>
+                        </div>
+                    </div>
+                    
+                    ${stock.rr ? `<div style="margin-top: 12px; text-align: right; color: var(--text-dim); font-size: 13px;">R:R ${stock.rr}</div>` : ''}
+                </div>
+            `;
+        }
+        
+        // PWA install
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+        });
+        
+        function showInstallPrompt() {
+            if (deferredPrompt && !localStorage.getItem('install_dismissed')) {
+                setTimeout(() => {
+                    installPrompt.classList.add('show');
+                }, 3000);
+            }
+        }
+        
+        installYes.addEventListener('click', async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                deferredPrompt = null;
+            }
+            installPrompt.classList.remove('show');
+        });
+        
+        installNo.addEventListener('click', () => {
+            localStorage.setItem('install_dismissed', 'true');
+            installPrompt.classList.remove('show');
+        });
+        
+        // Auto-refresh auto signals every 2 minutes
+        setInterval(() => {
+            if (appScreen.classList.contains('active') && document.querySelector('[data-tab="auto"]').classList.contains('active')) {
+                loadAutoSignals();
+            }
+        }, 120000);
+    </script>
+</body>
+</html>
