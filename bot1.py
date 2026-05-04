@@ -92,6 +92,125 @@ def home():
 def health():
     return "OK", 200
 
+@flask_app.route("/api/manual-nifty")
+def api_manual_nifty():
+    """Manual Nifty analysis for PWA"""
+    try:
+        # Run analysis in new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def get_nifty():
+            asset = ASSETS["nifty"]
+            market, vix_data, rsi_result, ema_result = await asyncio.gather(
+                get_market_data("nifty"),
+                run_in_thread(_get_vix, timeout=10),
+                run_in_thread(_get_rsi, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=15),
+                run_in_thread(_get_ema_data, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=15),
+            )
+            
+            if not market:
+                return None
+                
+            rsi, rsi_sig, _ = rsi_result if rsi_result else (None, None, None)
+            ema_data, _, _  = ema_result if ema_result else (None, None, None)
+            fib_data        = _calc_fibonacci(market["high"], market["low"], market["price"]) if market.get("high") and market.get("low") else None
+            candle_data     = await run_in_thread(_detect_candle_pattern, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=10)
+            greeks_r        = await run_in_thread(_get_greeks, market["price"], "nifty", None, timeout=10)
+            greeks, atm, _  = greeks_r if greeks_r else ({}, round(market["price"]/50)*50, "")
+            zones           = get_zones(market)
+            res             = master_engine(market, None, greeks, atm, "", zones, rsi, vix_data, "nifty", ema_data, fib_data)
+            
+            action = res["action"]
+            score  = max(res["sb"], res["sb_bear"])
+            
+            return {
+                "symbol": "NIFTY",
+                "price": market["price"],
+                "change": market.get("change", 0),
+                "signal": "BULLISH — CALL BUY" if "CALL" in action else "BEARISH — PUT BUY" if "PUT" in action else "NEUTRAL",
+                "atm": atm,
+                "rsi": rsi,
+                "ema9": ema_data["ema9"] if ema_data else None,
+                "ema14": ema_data["ema14"] if ema_data else None,
+                "candle_pattern": candle_data["pattern"] if candle_data else "N/A",
+                "fib_zone": fib_data["zone"] if fib_data else "N/A",
+                "entry": zones["imm_sup"] if "CALL" in action else zones["imm_res"],
+                "target": zones["imm_res"] if "CALL" in action else zones["imm_sup"],
+                "sl": zones["s1"] if "CALL" in action else zones["r1"],
+                "confidence": res["confidence"],
+                "timestamp": datetime.now().isoformat(),
+            }
+        
+        result = loop.run_until_complete(get_nifty())
+        loop.close()
+        
+        if result:
+            return jsonify(result), 200
+        else:
+            return jsonify({"error": "Failed to fetch data"}), 500
+    except Exception as e:
+        print(f"Manual Nifty API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@flask_app.route("/api/manual-equity")
+def api_manual_equity():
+    """Manual Equity analysis for PWA"""
+    try:
+        # Run equity analysis
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def get_equity():
+            vol_syms = await run_in_thread(_get_high_volume_stocks, timeout=15)
+            lt_syms  = await run_in_thread(_get_long_term_stocks, timeout=20)
+            
+            high_volume = []
+            for sym in (vol_syms or [])[:3]:  # Top 3 only
+                data = await run_in_thread(_get_stock_data_15m, sym, timeout=12)
+                ana  = _analyze_stock(data) if data else None
+                if data and ana:
+                    high_volume.append({
+                        "symbol": sym,
+                        "price": data["price"],
+                        "change": data["change"],
+                        "signal": "BUY" if ana["score"] >= 2 else ("SELL" if ana["score"] <= -2 else "HOLD"),
+                        "entry": ana["entry"],
+                        "target": ana["target"],
+                        "sl": ana["sl"],
+                    })
+            
+            long_term = []
+            for sym in (lt_syms or [])[:3]:  # Top 3 only
+                data = await run_in_thread(_get_stock_data_week, sym, timeout=12)
+                ana  = _analyze_stock(data) if data else None
+                if data and ana:
+                    long_term.append({
+                        "symbol": sym,
+                        "price": data["price"],
+                        "change_3m": data.get("change_3m", 0),
+                        "signal": "BUY" if ana["score"] >= 2 else ("SELL" if ana["score"] <= -2 else "HOLD"),
+                        "entry": ana["entry"],
+                        "target": ana["target"],
+                        "sl": ana["sl"],
+                    })
+            
+            return {
+                "high_volume": high_volume,
+                "long_term": long_term,
+                "selected": [],  # MY_COMPANIES list
+                "timestamp": datetime.now().isoformat(),
+            }
+        
+        result = loop.run_until_complete(get_equity())
+        loop.close()
+        
+        return jsonify(result), 200
+    except Exception as e:
+        print(f"Manual Equity API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 def run_flask():
     flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)), debug=False, use_reloader=False)
 
@@ -1514,6 +1633,36 @@ _Type `trade!` here for full personal analysis in DM_
 
                         await signal_ch.send(auto_msg)
                         print(f"Auto signal sent: {action} at {datetime.now()}")
+                        
+                        # Save signal data for PWA
+                        try:
+                            signal_data = {
+                                "timestamp": datetime.now().isoformat(),
+                                "symbol": "NIFTY",
+                                "action": action,
+                                "signal": "BULLISH — CALL BUY" if "CALL" in action else "BEARISH — PUT BUY",
+                                "price": market["price"],
+                                "change": market.get("change", 0),
+                                "atm": atm,
+                                "rsi": rsi,
+                                "ema9": ema_data["ema9"] if ema_data else None,
+                                "ema14": ema_data["ema14"] if ema_data else None,
+                                "ema_signal": ema_data["signal"] if ema_data else "N/A",
+                                "candle_pattern": "N/A",  # Will add later
+                                "fib_zone": fib_data["zone"] if fib_data else "N/A",
+                                "entry": zones["imm_sup"] if "CALL" in action else zones["imm_res"],
+                                "target": zones["imm_res"] if "CALL" in action else zones["imm_sup"],
+                                "sl": zones["s1"] if "CALL" in action else zones["r1"],
+                                "confidence": res["confidence"],
+                                "score": f"{score}/9",
+                                "vwap": res["vwap"],
+                                "vix": vix_data["vix"] if vix_data else None,
+                            }
+                            with open("/root/bot/auto_signals.json", "w") as f:
+                                json.dump(signal_data, f, indent=2)
+                            print("Auto signal data saved for PWA")
+                        except Exception as save_err:
+                            print(f"Signal save error: {save_err}")
 
         except Exception as e:
             print(f"Auto signal error: {e}")
