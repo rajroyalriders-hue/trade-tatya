@@ -219,6 +219,89 @@ def api_manual_equity():
         print(f"Manual Equity API error: {e}")
         return jsonify({"error": str(e)}), 500
 
+@flask_app.route("/api/manual-nifty-plus")
+def api_manual_nifty_plus():
+    """Premium Plus Nifty analysis - Option premium based on zones"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def get_nifty_plus():
+            asset = ASSETS["nifty"]
+            market, vix_data, rsi_result, ema_result = await asyncio.gather(
+                get_market_data("nifty"),
+                run_in_thread(_get_vix, timeout=10),
+                run_in_thread(_get_rsi, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=15),
+                run_in_thread(_get_ema_data, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=15),
+            )
+            
+            if not market:
+                return None
+                
+            rsi, rsi_sig, _ = rsi_result if rsi_result else (None, None, None)
+            ema_data, _, _  = ema_result if ema_result else (None, None, None)
+            fib_data        = _calc_fibonacci(market["high"], market["low"], market["price"]) if market.get("high") and market.get("low") else None
+            candle_data     = await run_in_thread(_detect_candle_pattern, asset.get("yahoo_symbol","^NSEI"), asset.get("fyers_symbol",""), timeout=10)
+            greeks_r        = await run_in_thread(_get_greeks, market["price"], "nifty", None, timeout=10)
+            greeks, atm, _  = greeks_r if greeks_r else ({}, round(market["price"]/50)*50, "")
+            zones           = get_zones(market)
+            res             = master_engine(market, None, greeks, atm, "", zones, rsi, vix_data, "nifty", ema_data, fib_data)
+            
+            action = res["action"]
+            score  = max(res["sb"], res["sb_bear"])
+            
+            # Check zone touch
+            zone_type, zone_name, zone_price = check_zone_touch(market["price"], zones)
+            
+            # Premium Plus: Option analysis
+            option_data = analyze_option_premium(market["price"], zones, action, greeks, atm)
+            
+            return {
+                "symbol": "NIFTY",
+                "price": market["price"],
+                "change": market.get("change", 0),
+                "signal": "BULLISH — CALL BUY" if "CALL" in action else "BEARISH — PUT BUY" if "PUT" in action else "NEUTRAL",
+                "atm": atm,
+                "rsi": rsi,
+                "ema9": ema_data["ema9"] if ema_data else None,
+                "ema14": ema_data["ema14"] if ema_data else None,
+                "candle_pattern": candle_data["pattern"] if candle_data else "N/A",
+                "fib_zone": fib_data["zone"] if fib_data else "N/A",
+                # Option premium levels
+                "option_strike": f"{atm} {option_data['option_type']}",
+                "entry": option_data["entry"],
+                "target": option_data["target"],
+                "sl": option_data["sl"],
+                "delta": option_data["delta"],
+                # Zone info
+                "zone_touch": zone_type,
+                "zone_name": zone_name,
+                "zone_price": zone_price,
+                "confidence": res["confidence"],
+                "score": f"{score}/9",
+                "timestamp": datetime.now().isoformat(),
+                "zones": {
+                    "demand": zones["imm_sup"],
+                    "supply": zones["imm_res"],
+                    "support_1": zones["s1"],
+                    "support_2": zones["s2"],
+                    "resistance_1": zones["r1"],
+                    "resistance_2": zones["r2"],
+                },
+            }
+        
+        result = loop.run_until_complete(get_nifty_plus())
+        loop.close()
+        
+        if result:
+            return jsonify(result), 200
+        else:
+            return jsonify({"error": "Failed to fetch data"}), 500
+    except Exception as e:
+        print(f"Manual Nifty Plus API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)), debug=False, use_reloader=False)
@@ -851,6 +934,78 @@ def _get_greeks(spot, asset_key, oc_data=None):
     return greeks, atm, expiry_str
 
 # =========================
+# PREMIUM PLUS ANALYSIS
+# =========================
+def analyze_option_premium(spot_price, zones, action, greeks, atm, delta=0.5):
+    """Calculate option premium Entry/Target/SL based on Nifty zones"""
+    try:
+        is_call = "CALL" in action
+        
+        # Get current zones
+        if is_call:
+            current_zone = zones["imm_sup"]
+            target_zone = zones["imm_res"]
+            sl_zone = zones["s1"]
+        else:
+            current_zone = zones["imm_res"]
+            target_zone = zones["imm_sup"]
+            sl_zone = zones["r1"]
+        
+        # Find option premium from greeks
+        current_premium = None
+        for key, data in greeks.items():
+            if str(atm) in key and ("CE" in key if is_call else "PE" in key):
+                current_premium = data.get("ltp", 0)
+                delta = abs(data.get("delta", 0.5))
+                break
+        
+        if not current_premium or current_premium == 0:
+            current_premium = abs(spot_price - atm) + 50
+        
+        # Calculate movements
+        spot_to_target = abs(target_zone - current_zone)
+        spot_to_sl = abs(current_zone - sl_zone)
+        
+        premium_target_move = spot_to_target * delta
+        premium_sl_move = spot_to_sl * delta
+        
+        entry = round(current_premium, 2)
+        target = round(current_premium + premium_target_move, 2)
+        sl = round(max(current_premium - premium_sl_move, current_premium * 0.7), 2)
+        
+        return {
+            "entry": entry,
+            "target": target,
+            "sl": sl,
+            "strike": atm,
+            "option_type": "CE" if is_call else "PE",
+            "delta": delta,
+        }
+    except Exception as e:
+        print(f"Option premium calc error: {e}")
+        return {
+            "entry": 100,
+            "target": 150,
+            "sl": 80,
+            "strike": atm,
+            "option_type": "CE" if "CALL" in action else "PE",
+            "delta": 0.5,
+        }
+
+def check_zone_touch(price, zones, tolerance=20):
+    """Check if price touching strong zones"""
+    if abs(price - zones["s1"]) <= tolerance:
+        return ("demand", "S1", zones["s1"])
+    elif abs(price - zones["s2"]) <= tolerance:
+        return ("demand", "S2", zones["s2"])
+    elif abs(price - zones["r1"]) <= tolerance:
+        return ("supply", "R1", zones["r1"])
+    elif abs(price - zones["r2"]) <= tolerance:
+        return ("supply", "R2", zones["r2"])
+    return (None, None, None)
+
+
+# =========================
 # DEMAND SUPPLY ZONES
 # =========================
 def get_zones(market):
@@ -1292,7 +1447,8 @@ EQUITY_CHANNEL_ID = 1484099418541129738
 MY_COMPANIES = []  # e.g. ["RELIANCE", "TCS", "HDFCBANK"]
 
 
-SIGNAL_CHANNEL_ID = 1484099393714917387
+SIGNAL_CHANNEL_ID = 1484099393714917387  # Premium — Nifty levels
+PREMIUM_PLUS_CHANNEL_ID = None  # Premium Plus — Option prices (set channel ID when created)
 SIGNAL_THRESHOLD  = 7
 SIGNAL_INTERVAL   = 5
 last_auto_action  = None
@@ -1616,8 +1772,31 @@ async def run_auto_signal():
 
                     action = res["action"]
                     score  = max(res["sb"], res["sb_bear"])
-
-                    if score >= SIGNAL_THRESHOLD and action != "NO TRADE" and action != last_auto_action:
+                    
+                    # Check zone touch
+                    zone_type, zone_name, zone_price = check_zone_touch(market["price"], zones)
+                    
+                    # Auto-trigger logic (Priority based)
+                    should_trigger = False
+                    trigger_reason = ""
+                    
+                    # PRIORITY 1: Zone touch (demand/supply) with minimum score
+                    if zone_type and score >= 4:
+                        should_trigger = True
+                        trigger_reason = f"Zone Touch: {zone_name} @ ₹{zone_price}"
+                        # Force action based on zone
+                        if zone_type == "demand":
+                            action = "CALL BUY"
+                        else:  # supply
+                            action = "PUT BUY"
+                    
+                    # PRIORITY 2: High score (6+)
+                    elif score >= 6 and action != "NO TRADE":
+                        should_trigger = True
+                        trigger_reason = f"Strong Signal: {score}/9"
+                    
+                    # Send auto signal if triggered and different from last
+                    if should_trigger and action != last_auto_action:
                         last_auto_action = action
                         ae      = "🟢" if "CALL" in action else "🔴"
                         ema_str = f"EMA9:`{ema_data['ema9']}` EMA14:`{ema_data['ema14']}` — {ema_data['signal']}" if ema_data else "N/A"
@@ -1643,8 +1822,44 @@ _Type `trade!` here for full personal analysis in DM_
                         await signal_ch.send(auto_msg)
                         print(f"Auto signal sent: {action} at {datetime.now()}")
                         
+                        # Send Premium Plus signal (if channel configured)
+                        if PREMIUM_PLUS_CHANNEL_ID:
+                            plus_ch = client.get_channel(PREMIUM_PLUS_CHANNEL_ID)
+                            if plus_ch:
+                                # Calculate option premium levels
+                                option_data = analyze_option_premium(market["price"], zones, action, greeks, atm)
+                                
+                                plus_msg = f"""🌟 **PREMIUM PLUS AUTO SIGNAL** | {datetime.now().strftime('%d %b %H:%M')}
+━━━━━━━━━━━━━━━━━━━━
+{ae} **{action}** | Reason: `{trigger_reason}`
+
+📍 **NIFTY @ ₹{market['price']}** {f"({zone_name})" if zone_type else ""}
+🎯 **Option: NIFTY {atm} {option_data['option_type']}**
+
+💰 **Entry:** ₹{option_data['entry']}
+🎯 **Target:** ₹{option_data['target']}
+🛑 **Stop Loss:** ₹{option_data['sl']}
+
+📊 **Analysis:**
+• Score: {score}/9 | Confidence: {res['confidence']}%
+• RSI: {rsi} | Delta: {option_data['delta']:.3f}
+• Fib: {fib_str}
+
+📍 **Zones:**
+• Demand: ₹{zones['imm_sup']} | Supply: ₹{zones['imm_res']}
+• S1: ₹{zones['s1']} | R1: ₹{zones['r1']}
+
+_Based on Nifty supply/demand zone analysis + Option chart matching_
+📢 *Sirf educational purpose ke liye | SEBI registered nahi hain | Apne vivek se trade karein*"""
+                                
+                                await plus_ch.send(plus_msg)
+                                print(f"Premium Plus auto signal sent")
+                        
                         # Save signal data for PWA
                         try:
+                            # Calculate option data for Premium Plus users
+                            option_data = analyze_option_premium(market["price"], zones, action, greeks, atm)
+                            
                             signal_data = {
                                 "timestamp": datetime.now().isoformat(),
                                 "symbol": "NIFTY",
@@ -1657,7 +1872,7 @@ _Type `trade!` here for full personal analysis in DM_
                                 "ema9": ema_data["ema9"] if ema_data else None,
                                 "ema14": ema_data["ema14"] if ema_data else None,
                                 "ema_signal": ema_data["signal"] if ema_data else "N/A",
-                                "candle_pattern": "N/A",  # Will add later
+                                "candle_pattern": "N/A",
                                 "fib_zone": fib_data["zone"] if fib_data else "N/A",
                                 "entry": zones["imm_sup"] if "CALL" in action else zones["imm_res"],
                                 "target": zones["imm_res"] if "CALL" in action else zones["imm_sup"],
@@ -1666,6 +1881,16 @@ _Type `trade!` here for full personal analysis in DM_
                                 "score": f"{score}/9",
                                 "vwap": res["vwap"],
                                 "vix": vix_data["vix"] if vix_data else None,
+                                "trigger_reason": trigger_reason,
+                                # Premium Plus option data
+                                "option_strike": f"{atm} {option_data['option_type']}",
+                                "option_entry": option_data["entry"],
+                                "option_target": option_data["target"],
+                                "option_sl": option_data["sl"],
+                                "delta": option_data["delta"],
+                                "zone_touch": zone_type,
+                                "zone_name": zone_name,
+                                "zone_price": zone_price,
                                 # Supply/Demand Zones
                                 "zones": {
                                     "demand": zones["imm_sup"],
@@ -1695,6 +1920,7 @@ import random
 import string
 
 PREMIUM_ROLE_NAME = "Premium Member"
+PREMIUM_PLUS_ROLE_NAME = "Premium Plus Member"
 CODE_VALIDITY_DAYS = 3
 PWA_LINK = "http://tradeforprosperity.online"  # HTTP for now - HTTPS later
 CODES_FILE = "/root/bot/premium_codes.json"
@@ -1719,7 +1945,7 @@ def generate_code():
     part2 = "".join(random.choices(chars, k=5))
     return f"{part1}-{part2}"
 
-async def send_premium_code(member):
+async def send_premium_code(member, tier="premium"):
     """Generate code, save it, DM user"""
     codes      = load_codes()
     code       = generate_code()
@@ -1730,6 +1956,7 @@ async def send_premium_code(member):
         "user_id":    member.id,
         "username":   str(member),
         "guild_id":   member.guild.id,
+        "tier":       tier,  # premium or premium_plus
         "created":    datetime.now().isoformat(),
         "expires":    expires_at,
         "active":     True,
@@ -1737,11 +1964,13 @@ async def send_premium_code(member):
     save_codes(codes)
 
     expiry_str = (datetime.now() + timedelta(days=CODE_VALIDITY_DAYS)).strftime("%d %b %Y, %I:%M %p")
+    
+    tier_name = "Premium Plus 🌟" if tier == "premium_plus" else "Premium"
 
-    msg = f"""🎉 **Welcome to Premium, {member.name}!** 🎉
+    msg = f"""🎉 **Welcome to {tier_name}, {member.name}!** 🎉
 ━━━━━━━━━━━━━━━━━━━━
 
-✨ **Your Premium Access Code:**
+✨ **Your {tier_name} Access Code:**
 ```
 {code}
 ```
@@ -1826,22 +2055,29 @@ async def check_expired_codes():
 
 @client.event
 async def on_member_update(before, after):
-    """Detect when Premium Member role is added"""
+    """Detect when Premium Member or Premium Plus Member role is added"""
     try:
         before_roles = set([r.name for r in before.roles])
         after_roles  = set([r.name for r in after.roles])
         added_roles  = after_roles - before_roles
 
-        if PREMIUM_ROLE_NAME in added_roles:
+        tier = None
+        if PREMIUM_PLUS_ROLE_NAME in added_roles:
+            tier = "premium_plus"
+            print(f"Premium Plus role added to: {after.name}")
+        elif PREMIUM_ROLE_NAME in added_roles:
+            tier = "premium"
             print(f"Premium role added to: {after.name}")
+        
+        if tier:
             # Generate new code (deactivate old codes for this user)
             codes = load_codes()
             for code, info in codes.items():
                 if info["user_id"] == after.id and info.get("active", True):
                     info["active"] = False
             save_codes(codes)
-            # Send new code
-            await send_premium_code(after)
+            # Send new code with tier
+            await send_premium_code(after, tier)
     except Exception as e:
         print(f"on_member_update error: {e}")
 
