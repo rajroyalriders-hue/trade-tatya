@@ -177,13 +177,22 @@ async def get_nifty_trade(req: TradeRequest):
     increment_usage(req.code, "nifty")
     
     try:
-        # Call bot's Flask API
+        # Check tier — Premium or Premium Plus
+        tier = info.get("tier", "premium")
         import requests
-        response = requests.get("http://localhost:8080/api/manual-nifty", timeout=30)
+        
+        if tier == "premium_plus":
+            # Premium Plus: Option analysis
+            response = requests.get("http://localhost:8080/api/manual-nifty-plus", timeout=30)
+        else:
+            # Premium: Basic Nifty analysis
+            response = requests.get("http://localhost:8080/api/manual-nifty", timeout=30)
+        
         data = response.json()
         
         return {
             "success": True,
+            "tier": tier,
             "used": used + 1,
             "remaining": remaining - 1,
             "data": data
