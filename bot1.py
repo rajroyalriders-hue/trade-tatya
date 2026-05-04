@@ -140,6 +140,15 @@ def api_manual_nifty():
                 "sl": zones["s1"] if "CALL" in action else zones["r1"],
                 "confidence": res["confidence"],
                 "timestamp": datetime.now().isoformat(),
+                # Supply/Demand Zones
+                "zones": {
+                    "demand": zones["imm_sup"],
+                    "supply": zones["imm_res"],
+                    "support_1": zones["s1"],
+                    "support_2": zones["s2"],
+                    "resistance_1": zones["r1"],
+                    "resistance_2": zones["r2"],
+                },
             }
         
         result = loop.run_until_complete(get_nifty())
@@ -1657,6 +1666,15 @@ _Type `trade!` here for full personal analysis in DM_
                                 "score": f"{score}/9",
                                 "vwap": res["vwap"],
                                 "vix": vix_data["vix"] if vix_data else None,
+                                # Supply/Demand Zones
+                                "zones": {
+                                    "demand": zones["imm_sup"],
+                                    "supply": zones["imm_res"],
+                                    "support_1": zones["s1"],
+                                    "support_2": zones["s2"],
+                                    "resistance_1": zones["r1"],
+                                    "resistance_2": zones["r2"],
+                                },
                             }
                             with open("/root/bot/auto_signals.json", "w") as f:
                                 json.dump(signal_data, f, indent=2)
