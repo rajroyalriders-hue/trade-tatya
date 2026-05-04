@@ -130,33 +130,36 @@ async def login(req: LoginRequest):
 
 @app.get("/api/auto-signals")
 async def get_auto_signals(code: str):
-    """Get latest auto signals from Nifty premium channel"""
+    """Get latest auto signals from bot's saved file"""
     info, msg = verify_code(code)
     if not info:
         raise HTTPException(status_code=401, detail=msg)
     
-    # TODO: Fetch from Discord channel or cache
-    # For now return mock data
-    return {
-        "signals": [
-            {
-                "timestamp": datetime.now().isoformat(),
-                "symbol": "NIFTY",
-                "action": "CALL BUY",
-                "price": 23997.55,
-                "confidence": 95,
-                "score": "7/9",
-                "entry": 23944.79,
-                "target": 24100,
-                "sl": 23896.79,
-            }
-        ],
-        "count": 1,
-    }
+    try:
+        # Read from bot's auto_signals.json
+        with open("/root/bot/auto_signals.json", "r") as f:
+            signal = json.load(f)
+        
+        return {
+            "signals": [signal] if signal else [],
+            "count": 1 if signal else 0,
+        }
+    except FileNotFoundError:
+        return {
+            "signals": [],
+            "count": 0,
+            "message": "No signals yet - waiting for next auto signal from bot"
+        }
+    except Exception as e:
+        return {
+            "signals": [],
+            "count": 0,
+            "error": str(e)
+        }
 
 @app.post("/api/trade/nifty")
 async def get_nifty_trade(req: TradeRequest):
-    """Manual Nifty trade request — 5/day limit"""
+    """Manual Nifty trade request — calls bot's Flask API"""
     info, msg = verify_code(req.code)
     if not info:
         raise HTTPException(status_code=401, detail=msg)
@@ -173,34 +176,28 @@ async def get_nifty_trade(req: TradeRequest):
     # Increment usage
     increment_usage(req.code, "nifty")
     
-    # TODO: Trigger bot analysis and return real data
-    # For now return mock
-    return {
-        "success": True,
-        "used": used + 1,
-        "remaining": remaining - 1,
-        "data": {
-            "symbol": "NIFTY",
-            "price": 23997.55,
-            "change": -0.69,
-            "signal": "BULLISH — CALL BUY",
-            "atm": 24000,
-            "rsi": 57.8,
-            "ema9": 24017.45,
-            "ema14": 24016.5,
-            "candle_pattern": "Hammer 🔨 (Bullish)",
-            "fib_zone": "Support zone (38.2%)",
-            "entry": 23944.79,
-            "target": 24100,
-            "sl": 23896.79,
-            "confidence": 95,
-            "timestamp": datetime.now().isoformat(),
+    try:
+        # Call bot's Flask API
+        import requests
+        response = requests.get("http://localhost:8080/api/manual-nifty", timeout=30)
+        data = response.json()
+        
+        return {
+            "success": True,
+            "used": used + 1,
+            "remaining": remaining - 1,
+            "data": data
         }
-    }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Bot analysis failed - please try again"
+        }
 
 @app.post("/api/trade/equity")
 async def get_equity_trade(req: TradeRequest):
-    """Manual Equity trade request — 5/day limit"""
+    """Manual Equity trade request — calls bot's Flask API"""
     info, msg = verify_code(req.code)
     if not info:
         raise HTTPException(status_code=401, detail=msg)
@@ -217,40 +214,24 @@ async def get_equity_trade(req: TradeRequest):
     # Increment usage
     increment_usage(req.code, "equity")
     
-    # TODO: Trigger bot equity analysis
-    # For now return mock
-    return {
-        "success": True,
-        "used": used + 1,
-        "remaining": remaining - 1,
-        "sections": {
-            "high_volume": [
-                {
-                    "symbol": "RELIANCE",
-                    "price": 1436.0,
-                    "change": 1.16,
-                    "signal": "BUY",
-                    "entry": 1436.0,
-                    "target": 1480.0,
-                    "sl": 1415.0,
-                    "rr": "1:2.1"
-                }
-            ],
-            "long_term": [
-                {
-                    "symbol": "TCS",
-                    "price": 4021.0,
-                    "change_3m": -3.66,
-                    "signal": "NEUTRAL",
-                    "entry": 4021.0,
-                    "target": 4250.0,
-                    "sl": 3900.0,
-                }
-            ],
-            "selected": []
-        },
-        "timestamp": datetime.now().isoformat(),
-    }
+    try:
+        # Call bot's Flask API
+        import requests
+        response = requests.get("http://localhost:8080/api/manual-equity", timeout=60)
+        sections = response.json()
+        
+        return {
+            "success": True,
+            "used": used + 1,
+            "remaining": remaining - 1,
+            "sections": sections
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Bot analysis failed - please try again"
+        }
 
 @app.get("/api/usage")
 async def get_usage(code: str):
