@@ -2087,9 +2087,11 @@ async def on_member_update(before, after):
 # =========================
 @client.event
 async def on_ready():
-    print(f"Bot ready: {client.user}")
-    asyncio.ensure_future(run_auto_signal())
-    asyncio.ensure_future(check_expired_codes())
+    print(f"✅ Bot ready: {client.user}")
+    print("Starting auto signal task...")
+    client.loop.create_task(run_auto_signal())
+    client.loop.create_task(check_expired_codes())
+    print("Background tasks started!")
 
 @client.event
 async def on_message(message):
