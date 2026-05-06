@@ -19,6 +19,14 @@ FYERS_APP_ID       = os.getenv("FYERS_APP_ID", "R19GD9BCZH-200")
 FYERS_ACCESS_TOKEN = os.getenv("FYERS_ACCESS_TOKEN")
 FYERS_SECRET_KEY   = os.getenv("FYERS_SECRET_KEY")
 
+# Groww API (REST)
+GROWW_API_KEY      = os.getenv("GROWW_API_KEY")
+GROWW_ACCESS_TOKEN = os.getenv("GROWW_ACCESS_TOKEN")
+GROWW_AVAILABLE    = bool(GROWW_API_KEY and GROWW_ACCESS_TOKEN)
+
+if GROWW_AVAILABLE:
+    print("✅ Groww API credentials found")
+
 TOKEN_CHANNEL_ID = 1498884238496239626
 ALLOWED_USER_ID  = 1158032451659120732
 
@@ -256,6 +264,11 @@ def api_manual_nifty_plus():
             # Premium Plus: Option analysis
             option_data = analyze_option_premium(market["price"], zones, action, greeks, atm)
             
+            # Fetch PCR/OI from Groww
+            pcr_data = await run_in_thread(_get_pcr_from_groww, timeout=10)
+            oi_data = await run_in_thread(_get_oi_from_groww, market["price"], timeout=10)
+            groww_greeks = await run_in_thread(_get_greeks_from_groww, market["price"], atm, timeout=10)
+            
             return {
                 "symbol": "NIFTY",
                 "price": market["price"],
@@ -279,6 +292,16 @@ def api_manual_nifty_plus():
                 "zone_price": zone_price,
                 "confidence": res["confidence"],
                 "score": f"{score}/9",
+                # PCR data from Groww
+                "pcr": pcr_data["pcr"] if pcr_data else None,
+                "pcr_sentiment": pcr_data["sentiment"] if pcr_data else "N/A",
+                # OI data from Groww
+                "max_pain": oi_data["max_pain"] if oi_data else None,
+                "atm_call_oi": oi_data["atm_call_oi"] if oi_data else None,
+                "atm_put_oi": oi_data["atm_put_oi"] if oi_data else None,
+                # Greeks from Groww (if available, else Fyers)
+                "iv": groww_greeks[f"CE_{atm}"]["iv"] if groww_greeks else None,
+                "theta": groww_greeks[f"CE_{atm}"]["theta"] if groww_greeks else None,
                 "timestamp": datetime.now().isoformat(),
                 "zones": {
                     "demand": zones["imm_sup"],
@@ -824,6 +847,198 @@ def _get_vix():
         return {"vix": vx, "chg": ch, "level": lv}
     except Exception as e:
         print(f"VIX error: {e}")
+        return None
+
+# =========================
+# GROWW - PCR & OI DATA (REST API)
+# =========================
+def _get_pcr_from_groww():
+    """Fetch PCR (Put-Call Ratio) from Groww REST API"""
+    if not GROWW_AVAILABLE:
+        return None
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {GROWW_ACCESS_TOKEN}",
+            "X-API-KEY": GROWW_API_KEY,
+            "X-API-VERSION": "1.0",
+            "Accept": "application/json"
+        }
+        
+        response = requests.get(
+            "https://api.groww.in/v1/derivatives/option_chain/NIFTY", 
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            print(f"Groww PCR error: Status {response.status_code}")
+            return None
+        
+        data = response.json()
+        
+        if not data or 'optionChainData' not in data:
+            return None
+        
+        total_call_oi = 0
+        total_put_oi = 0
+        
+        for strike in data['optionChainData']:
+            ce = strike.get('CE', {})
+            pe = strike.get('PE', {})
+            
+            call_oi = ce.get('openInterest', 0) or 0
+            put_oi = pe.get('openInterest', 0) or 0
+            
+            total_call_oi += call_oi
+            total_put_oi += put_oi
+        
+        if total_call_oi == 0:
+            return None
+        
+        pcr = round(total_put_oi / total_call_oi, 2)
+        
+        if pcr > 1.2:
+            sentiment = "Bullish"
+        elif pcr < 0.8:
+            sentiment = "Bearish"
+        else:
+            sentiment = "Neutral"
+        
+        return {
+            "pcr": pcr,
+            "sentiment": sentiment,
+            "call_oi": total_call_oi,
+            "put_oi": total_put_oi,
+        }
+    except Exception as e:
+        print(f"Groww PCR error: {e}")
+        return None
+
+def _get_oi_from_groww(spot_price):
+    """Fetch OI data and Max Pain from Groww REST API"""
+    if not GROWW_AVAILABLE:
+        return None
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {GROWW_ACCESS_TOKEN}",
+            "X-API-KEY": GROWW_API_KEY,
+            "X-API-VERSION": "1.0",
+            "Accept": "application/json"
+        }
+        
+        response = requests.get(
+            "https://api.groww.in/v1/derivatives/option_chain/NIFTY",
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            return None
+        
+        data = response.json()
+        
+        if not data or 'optionChainData' not in data:
+            return None
+        
+        strikes_data = {}
+        
+        for strike_info in data['optionChainData']:
+            strike = strike_info.get('strikePrice')
+            if not strike:
+                continue
+            
+            ce = strike_info.get('CE', {})
+            pe = strike_info.get('PE', {})
+            
+            call_oi = ce.get('openInterest', 0) or 0
+            put_oi = pe.get('openInterest', 0) or 0
+            
+            strikes_data[strike] = {'call_oi': call_oi, 'put_oi': put_oi}
+        
+        # Calculate Max Pain
+        max_pain = None
+        min_loss = float('inf')
+        
+        for test_strike in strikes_data.keys():
+            total_loss = 0
+            for strike, oi_data in strikes_data.items():
+                if strike < test_strike:
+                    total_loss += oi_data['call_oi'] * (test_strike - strike)
+                if strike > test_strike:
+                    total_loss += oi_data['put_oi'] * (strike - test_strike)
+            
+            if total_loss < min_loss:
+                min_loss = total_loss
+                max_pain = test_strike
+        
+        atm = round(spot_price / 50) * 50
+        atm_data = strikes_data.get(atm, {})
+        
+        return {
+            "max_pain": max_pain,
+            "atm_call_oi": atm_data.get('call_oi', 0),
+            "atm_put_oi": atm_data.get('put_oi', 0),
+        }
+    except Exception as e:
+        print(f"Groww OI error: {e}")
+        return None
+
+def _get_greeks_from_groww(spot_price, atm):
+    """Fetch Greeks from Groww REST API"""
+    if not GROWW_AVAILABLE:
+        return None
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {GROWW_ACCESS_TOKEN}",
+            "X-API-KEY": GROWW_API_KEY,
+            "X-API-VERSION": "1.0",
+            "Accept": "application/json"
+        }
+        
+        response = requests.get(
+            "https://api.groww.in/v1/derivatives/option_chain/NIFTY",
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            return None
+        
+        data = response.json()
+        
+        if not data or 'optionChainData' not in data:
+            return None
+        
+        greeks = {}
+        
+        for strike_info in data['optionChainData']:
+            strike = strike_info.get('strikePrice')
+            
+            if strike == atm:
+                ce = strike_info.get('CE', {})
+                pe = strike_info.get('PE', {})
+                
+                greeks[f"CE_{atm}"] = {
+                    "ltp": ce.get('lastPrice', 0) or ce.get('ltp', 0),
+                    "iv": ce.get('impliedVolatility', 0) or ce.get('IV', 0),
+                    "delta": ce.get('delta', 0.5),
+                    "theta": ce.get('theta', -10),
+                }
+                
+                greeks[f"PE_{atm}"] = {
+                    "ltp": pe.get('lastPrice', 0) or pe.get('ltp', 0),
+                    "iv": pe.get('impliedVolatility', 0) or pe.get('IV', 0),
+                    "delta": pe.get('delta', -0.5),
+                    "theta": pe.get('theta', -10),
+                }
+                break
+        
+        return greeks if greeks else None
+    except Exception as e:
+        print(f"Groww Greeks error: {e}")
         return None
 
 # =========================
